@@ -2,7 +2,9 @@
 import os
 
 import folder_paths
+from nodes import SaveImage
 
+from .sceneloader.prompt_log import build_log
 from .sceneloader.assembler import (Library, SceneError, assemble, camera_tags_from_json, report,
                                     to_lora_stack)
 
@@ -73,7 +75,47 @@ class SceneLoader:
                 to_lora_stack(result["loras_detailer"], base), info)
 
 
-NODE_CLASS_MAPPINGS = {"SceneLoader": SceneLoader}
-NODE_DISPLAY_NAME_MAPPINGS = {"SceneLoader": "Scene Loader"}
+class SceneSave(SaveImage):
+    """SaveImage that also writes <image>.txt with the final prompt and generation settings."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE", {"tooltip": "The images to save."}),
+                "filename_prefix": ("STRING", {"default": "sceneloader/image"}),
+            },
+            "optional": {
+                "positive": ("STRING", {"forceInput": True, "tooltip": "Final positive prompt"}),
+                "negative": ("STRING", {"forceInput": True, "tooltip": "Final negative prompt"}),
+                "info": ("STRING", {"forceInput": True, "tooltip": "Scene Loader info"}),
+            },
+            "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("images", "log")
+    FUNCTION = "save_with_log"
+    CATEGORY = "SceneLoader"
+
+    # Save PNGs via SaveImage, then write a .txt log next to each file.
+    def save_with_log(self, images, filename_prefix="sceneloader/image", positive="", negative="",
+                      info="", prompt=None, extra_pnginfo=None):
+        out = self.save_images(images, filename_prefix, prompt, extra_pnginfo)
+        height, width = images[0].shape[0], images[0].shape[1]
+        logs = []
+        for item in out["ui"]["images"]:
+            folder = os.path.join(self.output_dir, item["subfolder"])
+            text = build_log(item["filename"], width, height, prompt, positive, negative, info)
+            txt = os.path.join(folder, os.path.splitext(item["filename"])[0] + ".txt")
+            with open(txt, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            logs.append(text)
+            print(f"[SceneLoader] saved {item['subfolder']}/{item['filename']} + .txt log")
+        return {"ui": out["ui"], "result": (images, "\n".join(logs))}
+
+
+NODE_CLASS_MAPPINGS = {"SceneLoader": SceneLoader, "SceneSave": SceneSave}
+NODE_DISPLAY_NAME_MAPPINGS = {"SceneLoader": "Scene Loader", "SceneSave": "Scene Save"}
 
 print(f"[SceneLoader] loaded - {len(NODE_CLASS_MAPPINGS)} nodes, library: {library_root()}")
