@@ -30,7 +30,21 @@ def test_optional_tags():
     assert got == {"extra_positive": "dappled light", "extra_negative": "3d"}, got
 
 
+def test_weights_from_workflow():
+    import json
+    import re
+    norm = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())  # noqa: E731
+    names = {norm("abc_v1")}
+    rg = {"comfy": json.dumps({"n": [{"on": True, "lora": "illustrious\\style\\abc_v1.safetensors", "strength": 0.65}]})}
+    ll = {"workflow": {"nodes": [{"inputs": {"lora_name": "abc_v1.safetensors", "strength_model": 0.7}}]}}
+    two = {"comfy": json.dumps({"x": [{"lora": "other.safetensors", "strength": 0.3},
+                                      {"lora": "sub/abc_v1.safetensors", "strength": 0.9}]})}
+    assert F.weights_from_workflow(rg, names, norm) == [0.65]
+    assert F.weights_from_workflow(ll, names, norm) == [0.7]
+    assert F.weights_from_workflow(two, names, norm) == [0.9]
+
+
 if __name__ == "__main__":
-    for fn in (test_weights_from_text, test_optional_tags):
+    for fn in (test_weights_from_text, test_optional_tags, test_weights_from_workflow):
         fn()
         print(f"ok  {fn.__name__}")

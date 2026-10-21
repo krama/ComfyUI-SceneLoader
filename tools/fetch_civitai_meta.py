@@ -77,6 +77,24 @@ def weights_from_text(text, our_base):
     return (min(values), max(values)) if values else None
 
 
+# Return LoRA weights for this file from ComfyUI graphs embedded in an example image's meta.
+def weights_from_workflow(meta, names, norm):
+    blob = json.dumps(meta)
+    q = r'\\*"'  # a quote, possibly escaped once or more inside nested JSON strings
+    patterns = (
+        q + r"lora" + q + r":\s*" + q + r"(.+?)" + q + r",\s*" + q + r"strength" + q + r":\s*(-?\d+(?:\.\d+)?)",
+        q + r"lora_name" + q + r":\s*" + q + r"(.+?)" + q + r"[^{}]{0,200}?" + q + r"strength_model" + q
+        + r":\s*(-?\d+(?:\.\d+)?)",
+    )
+    out = []
+    for pat in patterns:
+        for path, w in re.findall(pat, blob):
+            stem = os.path.splitext(re.split(r"[\\/]+", path)[-1])[0]
+            if norm(stem) in names:
+                out.append(float(w))
+    return out
+
+
 # Return (min, max) weights this exact LoRA used in the author's example images, or None.
 def weights_from_examples(info, stem):
     norm = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())  # noqa: E731
@@ -95,6 +113,7 @@ def weights_from_examples(info, stem):
         for n, w in re.findall(r"<lora:([^:>]+):(-?\d+(?:\.\d+)?)", meta.get("prompt") or ""):
             if norm(n) in names:
                 ws.append(float(w))
+        ws += weights_from_workflow(meta, names, norm)
     ws = [w for w in ws if 0.05 <= w <= 2.0]
     return (min(ws), max(ws)) if ws else None
 
