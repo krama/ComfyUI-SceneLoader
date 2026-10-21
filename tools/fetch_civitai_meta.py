@@ -3,8 +3,9 @@
 
 Reads modelId/versionId from <lora>.civitai.info, queries the public Civitai API once per model,
 and records name, tags, trigger sets, author's optional positive/negative tags and a recommended
-weight range. Weight source priority: version description > model description > author's example
-images (exact LoRA match) > default 1.0. Existing sidecars are skipped unless --force.
+weight range. Weight source priority: version "Usage Tips" strength > version description >
+model description > author's example images (exact LoRA match) > default 1.0.
+Existing sidecars are skipped unless --force.
 """
 import argparse
 import csv
@@ -128,9 +129,9 @@ def optional_tags(text):
     return out
 
 
-# GET a Civitai model with retries on 429/5xx.
-def fetch_model(model_id, retries=4):
-    req = urllib.request.Request(API.format(model_id), headers={"User-Agent": "ComfyUI-SceneLoader/0.1"})
+# GET JSON from Civitai with retries on 429/5xx; None on 404.
+def fetch_json(url, retries=4):
+    req = urllib.request.Request(url, headers={"User-Agent": "ComfyUI-SceneLoader/0.1"})
     for attempt in range(retries):
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
@@ -151,13 +152,18 @@ def fetch_model(model_id, retries=4):
 
 
 # Build sidecar data for one LoRA from its civitai.info and the fetched model (may be None).
-def build_meta(info, stem, model):
+def build_meta(info, stem, model, tips=None):
     vid = info.get("id")
     version = next((v for v in (model or {}).get("modelVersions", []) if v.get("id") == vid), {})
     our_base = base_key(info.get("baseModel") or version.get("baseModel"))
     vdesc, mdesc = plain(version.get("description") or info.get("description")), plain((model or {}).get("description"))
     weight, source = None, "default"
+    strength = (tips or {}).get("strength")
+    if isinstance(strength, (int, float)) and 0.05 <= abs(strength) <= 4:
+        weight, source = (float(strength), float(strength)), "usage_tips"
     for text, src in ((vdesc, "version_description"), (mdesc, "model_description")):
+        if weight:
+            break
         weight = weights_from_text(text, our_base)
         if weight:
             source = src
@@ -177,6 +183,7 @@ def build_meta(info, stem, model):
         "trigger_sets": [w for w in words if isinstance(w, str) and w.strip()],
         **optional_tags(vdesc + "\n" + mdesc),
         "weight": {"min": weight[0], "max": weight[1], "source": source},
+        "usage_tips": tips or {},
         "description": (vdesc + "\n\n" + mdesc).strip()[:4000],
     }
 
@@ -190,7 +197,14 @@ def main():
     ap.add_argument("--sleep", type=float, default=1.0, help="seconds between API calls")
     ap.add_argument("--force", action="store_true", help="rewrite existing sidecars")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "out"))
+    ap.add_argument("--tips", help="JSON {versionId: settings} with Usage Tips collected in a browser "
+                                   "(modelVersion.getById settings; site tRPC needs a browser session)")
     args = ap.parse_args()
+    tips = {}
+    if args.tips:
+        with open(args.tips, encoding="utf-8") as fh:
+            tips = {str(k): v for k, v in json.load(fh).items()}
+        log(f"usage tips loaded for {len(tips)} versions")
     infos = sorted(glob.glob(os.path.join(args.models_root, args.subdir, "**", "*.civitai.info"), recursive=True))
     if args.sample:
         step = max(1, len(infos) // args.sample)
@@ -213,13 +227,13 @@ def main():
         mid = info.get("modelId")
         if mid and mid not in models:
             try:
-                models[mid] = fetch_model(mid)
+                models[mid] = fetch_json(API.format(mid))
             except Exception as e:  # network or API error: keep local data only
                 log(f"fetch failed for model {mid}: {e}")
                 models[mid] = None
             fetched += 1
             time.sleep(args.sleep)
-        meta = build_meta(info, os.path.basename(stem), models.get(mid))
+        meta = build_meta(info, os.path.basename(stem), models.get(mid), tips.get(str(info.get("id"))))
         with open(side, "w", encoding="utf-8") as fh:
             json.dump(meta, fh, ensure_ascii=False, indent=1)
         w = meta["weight"]

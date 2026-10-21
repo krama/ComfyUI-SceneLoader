@@ -44,7 +44,14 @@ def test_weights_from_workflow():
     assert F.weights_from_workflow(two, names, norm) == [0.9]
 
 
+def test_usage_tips_priority():
+    info = {"id": 1, "modelId": 2, "baseModel": "Illustrious", "description": "Use weight 0.6"}
+    tips = {"strength": 1, "minStrength": 0.7, "maxStrength": 1.5}
+    assert F.build_meta(info, "x", None, tips)["weight"] == {"min": 1.0, "max": 1.0, "source": "usage_tips"}
+    assert F.build_meta(info, "x", None, {})["weight"]["source"] == "version_description"
+
+
 if __name__ == "__main__":
-    for fn in (test_weights_from_text, test_optional_tags, test_weights_from_workflow):
+    for fn in (test_weights_from_text, test_optional_tags, test_weights_from_workflow, test_usage_tips_priority):
         fn()
         print(f"ok  {fn.__name__}")
