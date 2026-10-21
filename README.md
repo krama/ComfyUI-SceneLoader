@@ -1,16 +1,46 @@
 # ComfyUI-SceneLoader
 
-Scene preparation nodes for ComfyUI: a scene is a tree of entities
-(character, background, light, ...), each carrying its own prompt parts and LoRAs.
+Scene preparation nodes for ComfyUI: a scene is a tree of blocks
+(character, background, light, camera, style), each carrying its own prompt tags and LoRAs.
 
-## Layout
+## Node: Scene Loader
 
-- `__init__.py` — node registration
-- `blocks/` — reusable scene parts (poses, actions, weather, backgrounds, characters)
-- `scenes/` — composed scenes
-- `templates/` — text templates mixed via selectors
-- `tools/` — maintenance scripts for the model library (not loaded by ComfyUI)
+Inputs: `scene` (file from `scenes/`), `base` (LoRA base folder: `illustrious` or `anima`).
 
-## Install
+| Output | Connect to |
+| --- | --- |
+| `positive` | Prompt Merge Edit `prompt` |
+| `negative` | CLIP Text Encode (negative) `text` |
+| `lora_stack` | Simple Power Lora `lora_stack` |
+| `lora_stack_detailer` | Simple Power Lora in the detailer graph |
+| `info` | any text display: prompt order and LoRA sources |
 
-Symlink the repo into ComfyUI `custom_nodes/` and restart ComfyUI.
+## Library
+
+Looked up in order: `SCENELOADER_LIBRARY` env, `./library` (git-ignored, may be a symlink),
+`./examples`. Layout: `blocks/` (reusable blocks), `scenes/` (scenes referencing blocks).
+
+Block format:
+
+```yaml
+name: anna
+kind: character        # scene|quality|character|part|pose|action|expression|props|background|light|camera|style|detailer
+tags: "1girl, red hair"
+negative: "short hair"
+loras:
+  - {file: "character/anna.safetensors", weight: 0.9}   # type = first folder unless set
+children: []
+```
+
+A block may reference a library block with `use: characters/anna` and add tags or LoRAs locally.
+Identity (`character`) LoRA weights cannot be changed by the scene. Style LoRAs go last.
+A `kind: detailer` child of the scene sets the detailer delta: `add`, `drop` (types), `override`.
+
+## Tests
+
+`python tests/test_assembler.py`
+
+## Tools
+
+`tools/` holds model library maintenance scripts (dedupe, versions, quarantine, relocate,
+LoRA classification). They are not loaded by ComfyUI.

@@ -1,0 +1,22 @@
+name: forest_walk
+children:
+  - use: quality/default
+  - use: lights/golden_hour
+  - use: backgrounds/forest_path
+  - use: characters/example_girl
+    tags: "walking, smile"
+    loras:
+      - {file: "character/example_girl.safetensors", weight: 0.5}
+  - use: cameras/cowboy_shot
+  - name: style
+    kind: style
+    tags: "watercolor"
+    loras:
+      - {file: "style/example_watercolor.safetensors", weight: 0.7}
+  - name: detailer
+    kind: detailer
+    drop: [slider]
+    override:
+      - {type: character, weight: 1.0}
+    add:
+      - {file: "detail/example_detail.safetensors", weight: 0.5}

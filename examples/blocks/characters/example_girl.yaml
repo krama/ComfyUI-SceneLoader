@@ -1,0 +1,17 @@
+name: example_girl
+kind: character
+tags: "1girl, solo, long silver hair, blue eyes"
+negative: "short hair"
+loras:
+  - {file: "character/example_girl.safetensors", weight: 0.9}
+children:
+  - name: body
+    kind: part
+    loras:
+      - {file: "slider/example_height_slider.safetensors", weight: 1.0}
+  - name: clothing
+    kind: part
+    children:
+      - name: outerwear
+        kind: part
+        tags: "long coat"
