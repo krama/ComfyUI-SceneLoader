@@ -91,9 +91,9 @@ def main():
                 action, note = "move", ""
                 cur_slot_m = merge.get(cur_slot, cur_slot)
                 if cur_slot_m in trusted or not slot:
-                    if slot and slot != cur_slot_m:
+                    # Trusted folder keeps its slot; a different suggestion is only a note.
+                    if slot and slot != cur_slot_m and cur_slot_m:
                         note = f"rules suggest {slot}"
-                        action = "review"
                     slot = cur_slot_m
                 elif weak and cur_slot_m and slot != cur_slot_m:
                     # Only trained words matched: suggest, keep the file where it is.
