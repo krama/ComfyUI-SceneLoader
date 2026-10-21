@@ -2,6 +2,7 @@
 import os
 
 import folder_paths
+import torch
 from nodes import SaveImage
 
 from .sceneloader.prompt_log import build_log
@@ -79,7 +80,7 @@ class SceneLoader:
 
 
 class SceneSave(SaveImage):
-    """SaveImage that also writes <image>.txt with the final prompt and generation settings."""
+    """SaveImage that also returns a generation log (final prompt and settings) for Scene Log."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -101,20 +102,21 @@ class SceneSave(SaveImage):
     FUNCTION = "save_with_log"
     CATEGORY = "SceneLoader"
 
-    # Save PNGs via SaveImage, then write a .txt log next to each file.
+    # Save PNGs via SaveImage; the log is only returned to the UI (no files written).
     def save_with_log(self, images, filename_prefix="sceneloader/image", positive="", negative="",
                       info="", prompt=None, extra_pnginfo=None):
         out = self.save_images(images, filename_prefix, prompt, extra_pnginfo)
         height, width = images[0].shape[0], images[0].shape[1]
         logs = []
-        for item in out["ui"]["images"]:
-            folder = os.path.join(self.output_dir, item["subfolder"])
-            text = build_log(item["filename"], width, height, prompt, positive, negative, info)
-            txt = os.path.join(folder, os.path.splitext(item["filename"])[0] + ".txt")
-            with open(txt, "w", encoding="utf-8") as fh:
-                fh.write(text)
+        for k, item in enumerate(out["ui"]["images"]):
+            img = images[min(k, images.shape[0] - 1)]
+            has_nan = bool(torch.isnan(img).any())
+            all_black = bool(torch.nan_to_num(img).max() == 0)
+            text = build_log(item["filename"], width, height, prompt, positive, negative, info,
+                             has_nan=has_nan, all_black=all_black)
             logs.append(text)
-            print(f"[SceneLoader] saved {item['subfolder']}/{item['filename']} + .txt log")
+            flag = " - WARNING: NaN/black image" if (has_nan or all_black) else ""
+            print(f"[SceneLoader] saved {item['subfolder']}/{item['filename']}{flag}")
         joined = "\n".join(logs)
         return {"ui": {**out["ui"], "text": [joined]}, "result": (images, joined)}
 

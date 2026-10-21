@@ -31,6 +31,20 @@ def test_build_log():
     assert "positive:\n(not connected)" in empty, empty
 
 
+def test_warnings():
+    p = dict(PROMPT)
+    p["9"] = {"class_type": "PrimitiveInt", "inputs": {"value": -1}}
+    text = build_log("x.png", 8, 8, p, has_nan=True)
+    assert text.startswith("WARNING: image contains NaN"), text
+    assert "WARNING: clip skip -1" in text, text
+    clean = build_log("x.png", 8, 8, PROMPT)
+    assert "WARNING" not in clean, clean
+    black = build_log("x.png", 8, 8, PROMPT, all_black=True)
+    assert "is completely black" in black, black
+
+
 if __name__ == "__main__":
     test_build_log()
     print("ok  test_build_log")
+    test_warnings()
+    print("ok  test_warnings")
