@@ -6,7 +6,7 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from sceneloader.assembler import (Library, SceneError, assemble, camera_tags_from_json,  # noqa: E402
-                                   report, to_lora_stack)
+                                   report, scene_base, to_lora_stack)
 
 EXAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples")
 
@@ -98,7 +98,21 @@ def test_camera_override():
         assert r["positive"] == "forest, watercolor", r["positive"]
 
 
+def test_scene_base():
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "scenes"))
+        for name, body in (("a", "children:\n  - use: quality/anima\n"), ("i", "children:\n  - use: quality/illustrious\n"),
+                           ("n", "children:\n  - {name: bg, kind: background, tags: forest}\n"), ("bad", "children: ["),
+                           ("d", "children:\n  - use: quality/default\n")):
+            with open(os.path.join(d, "scenes", name + ".yaml"), "w") as fh:
+                fh.write(body)
+        lib = Library(d)
+        assert scene_base(lib, "a") == "anima" and scene_base(lib, "i") == "illustrious"
+        assert scene_base(lib, "n") is None
+        assert lib.scene_bases() == {"a": "anima", "bad": None, "d": None, "i": "illustrious", "n": None}, lib.scene_bases()
+
+
 if __name__ == "__main__":
-    for fn in (test_example_scene, test_errors, test_camera_tags, test_camera_override):
+    for fn in (test_example_scene, test_errors, test_camera_tags, test_camera_override, test_scene_base):
         fn()
         print(f"ok  {fn.__name__}")

@@ -6,7 +6,7 @@ from nodes import SaveImage
 
 from .sceneloader.prompt_log import build_log
 from .sceneloader.assembler import (Library, SceneError, assemble, camera_tags_from_json, report,
-                                    to_lora_stack)
+                                    scene_base, to_lora_stack, KNOWN_BASES)
 
 PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -26,7 +26,7 @@ class SceneLoader:
         scenes = Library(library_root()).scenes() or ["(no scenes)"]
         return {"required": {
             "scene": (scenes, {"tooltip": "Scene file from library/scenes"}),
-            "base": (["illustrious", "anima"], {"tooltip": "LoRA base folder under loras/"}),
+            "base": (list(KNOWN_BASES), {"tooltip": "LoRA base folder under loras/"}),
         }, "optional": {
             "camera_json": ("STRING", {"forceInput": True,
                                        "tooltip": "Advanced Camera Control camera_json; replaces camera block"}),
@@ -62,6 +62,9 @@ class SceneLoader:
             camera = self.camera_override(base, camera_json, camera_prompt)
             if camera is not None:
                 print(f"[SceneLoader] {scene}: 3d camera -> {camera}")
+            sb = scene_base(lib, scene)
+            if sb and sb != base:
+                raise SceneError(f"scene '{scene}' is written for base '{sb}', but base is '{base}'")
             result = assemble(lib, scene, camera)
         except SceneError as e:
             print(f"[SceneLoader] {scene}: {e}")
@@ -89,6 +92,8 @@ class SceneSave(SaveImage):
                 "positive": ("STRING", {"forceInput": True, "tooltip": "Final positive prompt"}),
                 "negative": ("STRING", {"forceInput": True, "tooltip": "Final negative prompt"}),
                 "info": ("STRING", {"forceInput": True, "tooltip": "Scene Loader info"}),
+                "log_view": ("STRING", {"multiline": True, "default": "",
+                                        "tooltip": "Filled with the log after each run; not used as input"}),
             },
             "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
         }
@@ -100,7 +105,7 @@ class SceneSave(SaveImage):
 
     # Save PNGs via SaveImage, then write a .txt log next to each file.
     def save_with_log(self, images, filename_prefix="sceneloader/image", positive="", negative="",
-                      info="", prompt=None, extra_pnginfo=None):
+                      info="", log_view="", prompt=None, extra_pnginfo=None):
         out = self.save_images(images, filename_prefix, prompt, extra_pnginfo)
         height, width = images[0].shape[0], images[0].shape[1]
         logs = []
@@ -112,10 +117,23 @@ class SceneSave(SaveImage):
                 fh.write(text)
             logs.append(text)
             print(f"[SceneLoader] saved {item['subfolder']}/{item['filename']} + .txt log")
-        return {"ui": out["ui"], "result": (images, "\n".join(logs))}
+        joined = "\n".join(logs)
+        return {"ui": {**out["ui"], "text": [joined]}, "result": (images, joined)}
 
+
+# Expose {scene: base} for the frontend scene filter.
+try:
+    from aiohttp import web
+    from server import PromptServer
+
+    @PromptServer.instance.routes.get("/sceneloader/scenes")
+    async def sceneloader_scenes(request):
+        return web.json_response({"scenes": Library(library_root()).scene_bases()})
+except Exception as e:  # server not available (tests, CLI)
+    print(f"[SceneLoader] scene filter route not registered: {e}")
 
 NODE_CLASS_MAPPINGS = {"SceneLoader": SceneLoader, "SceneSave": SceneSave}
+WEB_DIRECTORY = "./web"
 NODE_DISPLAY_NAME_MAPPINGS = {"SceneLoader": "Scene Loader", "SceneSave": "Scene Save"}
 
 print(f"[SceneLoader] loaded - {len(NODE_CLASS_MAPPINGS)} nodes, library: {library_root()}")

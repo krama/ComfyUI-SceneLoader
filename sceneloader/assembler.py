@@ -129,6 +129,16 @@ class Library:
                     out.append(os.path.splitext(rel)[0].replace(os.sep, "/"))
         return sorted(out)
 
+    # Return {scene: base or None}; scenes that fail to parse map to None.
+    def scene_bases(self):
+        out = {}
+        for name in self.scenes():
+            try:
+                out[name] = scene_base(self, name)
+            except (SceneError, OSError, yaml.YAMLError):
+                out[name] = None
+        return out
+
     # Return the newest modification time of any library file, for cache invalidation.
     def fingerprint(self):
         latest = 0.0
@@ -144,6 +154,21 @@ class Library:
             if os.path.isfile(p):
                 return p
         raise SceneError(f"{folder}/{ref}: file not found under {self.root}")
+
+
+# LoRA bases the Scene Loader node offers; other quality block names mean "any base".
+KNOWN_BASES = ("illustrious", "anima")
+
+
+# Return the base a scene is written for, from its "use: quality/<base>" child, else None.
+def scene_base(lib, scene_name):
+    raw = load_yaml(lib.path("scenes", scene_name))
+    for child in raw.get("children") or []:
+        ref = str((child or {}).get("use") or "") if isinstance(child, dict) else ""
+        if ref.startswith("quality/"):
+            name = ref.split("/", 1)[1]
+            return name if name in KNOWN_BASES else None
+    return None
 
 
 # Merge a local block onto a library block referenced by `use`.
