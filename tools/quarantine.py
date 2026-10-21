@@ -10,7 +10,7 @@ import os
 import sys
 
 # Sidecar suffixes that travel with a model; matched as "<stem><suffix>".
-SIDECAR_SUFFIXES = (".civitai.info", ".preview.png", ".preview.jpg", ".preview.jpeg",
+SIDECAR_SUFFIXES = (".civitai.info", ".sceneloader.json", ".preview.png", ".preview.jpg", ".preview.jpeg",
                     ".preview.webp", ".rgthree-info.json", ".metadata.json", ".json",
                     ".png", ".jpg", ".jpeg", ".webp", ".txt", ".yaml")
 
