@@ -10,8 +10,9 @@ import yaml
 # Prompt position per block kind; earlier tokens get more attention (SD prompt priority).
 KIND_RANK = {
     "scene": 0, "quality": 0,
-    "character": 1, "part": 1, "pose": 1, "action": 1, "expression": 1,
-    "props": 2,
+    "character": 1, "part": 1,
+    "body": 1.1, "clothing": 1.2, "expression": 1.3, "pose": 1.4, "action": 1.5,
+    "props": 2, "concept": 2, "nsfw": 2.1,
     "background": 3, "weather": 3,
     "light": 4,
     "camera": 5,
@@ -259,11 +260,18 @@ def apply_detailer(stack, delta, notes):
 
 # Assemble a scene; camera_override (tags) replaces camera block tags. Returns prompts and stacks.
 def assemble(lib, scene_name, camera_override=None):
-    notes = []
     raw = load_yaml(lib.path("scenes", scene_name))
-    raw.setdefault("kind", "scene")
     raw.setdefault("name", scene_name.split("/")[-1])
-    root = resolve(lib, raw, notes, f"scenes/{scene_name}")
+    return assemble_raw(lib, raw, f"scenes/{scene_name}", camera_override)
+
+
+# Assemble an in-memory scene mapping (same format as a scene file).
+def assemble_raw(lib, raw, where, camera_override=None, notes=None):
+    notes = [] if notes is None else notes
+    raw = dict(raw)
+    raw.setdefault("kind", "scene")
+    raw.setdefault("name", "scene")
+    root = resolve(lib, raw, notes, where)
 
     pos, neg, loras = [], [], []
     placed = camera_override is None
