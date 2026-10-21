@@ -36,6 +36,17 @@ A block may reference a library block with `use: characters/anna` and add tags o
 Identity (`character`) LoRA weights cannot be changed by the scene. Style LoRAs go last.
 A `kind: detailer` child of the scene sets the detailer delta: `add`, `drop` (types), `override`.
 
+## 3D camera (optional)
+
+Connect ComfyUI-AdvancedCameraPrompts outputs to Scene Loader `camera_json` and `camera_prompt`
+(Load 3D -> Advanced Camera Control Prompt Generator). When connected, they replace the scene
+camera block: `anima` uses the natural-language prompt, `illustrious` gets booru tags
+(shot type -> close-up/upper body/cowboy shot/full body/wide shot, tilt -> from above/below,
+pan -> from side/from behind).
+
+`tools/make_mannequin.py --out <ComfyUI input>/3d/mannequin.obj` writes a box figure facing +Z
+for framing (height and proportions are arguments).
+
 ## Tests
 
 `python tests/test_assembler.py`

@@ -66,6 +66,52 @@ def join_tags(parts):
     return ", ".join(tokens)
 
 
+# Booru tags per shot_type from ComfyUI-AdvancedCameraPrompts camera_json.
+SHOT_TAGS = {
+    "extreme_close_up": "close-up, portrait", "close_up": "close-up, portrait",
+    "medium_close_up": "upper body", "medium_shot": "upper body",
+    "medium_long_shot": "cowboy shot", "full_shot": "full body",
+    "wide_shot": "wide shot, very wide shot", "extreme_wide_shot": "wide shot, very wide shot",
+}
+
+
+# Return the signed number at the end of strings like "tilt down 30.0" or "pan to left 12.5".
+def _tail_number(text):
+    try:
+        return float(str(text).split()[-1])
+    except (ValueError, IndexError):
+        return 0.0
+
+
+# Convert AdvancedCameraPrompts camera_json (+ its prompt) into booru camera tags.
+def camera_tags_from_json(camera_json, camera_prompt=""):
+    try:
+        cam = json.loads(camera_json)["camera"]
+    except (ValueError, KeyError, TypeError) as e:
+        raise SceneError(f"camera_json: cannot parse ({e})")
+    tags = [SHOT_TAGS.get(cam.get("shot_type") or "", "")]
+    tilt = str(cam.get("tilt_deg") or "")
+    tilt_val = _tail_number(tilt)
+    if tilt.startswith("tilt down") and tilt_val >= 75:
+        tags.append("from above, bird's eye view")
+    elif tilt.startswith("tilt down") and tilt_val >= 15:
+        tags.append("from above")
+    elif tilt.startswith("tilt up") and tilt_val >= 15:
+        tags.append("from below")
+    # Their yaw is measured from the back view: front camera gives ~180, so angle = 180 - |pan|.
+    pan = abs(_tail_number(cam.get("pan_deg")))
+    view = 180.0 - pan
+    if pan == 0.0 and "Pan the camera" in (camera_prompt or "") and "behind" not in camera_prompt:
+        view = 90.0  # yaw collapses to 0 for an exact side view; the prompt text disambiguates
+    if tilt_val >= 75:
+        return join_tags(tags)  # near-vertical camera: horizontal angle is undefined in their math
+    if view > 150:
+        tags.append("from behind")
+    elif view >= 30:
+        tags.append("from side")
+    return join_tags(tags)
+
+
 class Library:
     """Block library rooted at a directory with blocks/ and scenes/ subfolders."""
 
@@ -186,8 +232,8 @@ def apply_detailer(stack, delta, notes):
     return out
 
 
-# Assemble a scene: returns dict(positive, negative, loras, loras_detailer, notes).
-def assemble(lib, scene_name):
+# Assemble a scene; camera_override (tags) replaces camera block tags. Returns prompts and stacks.
+def assemble(lib, scene_name, camera_override=None):
     notes = []
     raw = load_yaml(lib.path("scenes", scene_name))
     raw.setdefault("kind", "scene")
@@ -195,8 +241,18 @@ def assemble(lib, scene_name):
     root = resolve(lib, raw, notes, f"scenes/{scene_name}")
 
     pos, neg, loras = [], [], []
+    placed = camera_override is None
     for block, src in walk(root):
-        if block["tags"]:
+        if block["kind"] == "camera" and camera_override is not None:
+            if not placed and camera_override:
+                pos.append((camera_override, f"{src} <- 3d camera"))
+            placed = True
+            notes.append(f"{src}: camera tags replaced by 3d camera")
+        elif block["kind"] == "style" and not placed:
+            if camera_override:
+                pos.append((camera_override, "3d camera"))
+            placed = True
+        if block["tags"] and not (block["kind"] == "camera" and camera_override is not None):
             pos.append((block["tags"], src))
         if block["negative"]:
             neg.append(block["negative"])
@@ -205,6 +261,8 @@ def assemble(lib, scene_name):
                 notes.append(f"{src}: duplicate LoRA {item['file']} ignored")
                 continue
             loras.append({**item, "source": src})
+    if not placed and camera_override:
+        pos.append((camera_override, "3d camera"))
     # Style LoRAs change global model weights, so they always go last.
     loras = [x for x in loras if x["type"] != "style"] + [x for x in loras if x["type"] == "style"]
 

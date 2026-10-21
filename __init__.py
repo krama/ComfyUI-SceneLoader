@@ -3,7 +3,8 @@ import os
 
 import folder_paths
 
-from .sceneloader.assembler import Library, SceneError, assemble, report, to_lora_stack
+from .sceneloader.assembler import (Library, SceneError, assemble, camera_tags_from_json, report,
+                                    to_lora_stack)
 
 PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -24,6 +25,11 @@ class SceneLoader:
         return {"required": {
             "scene": (scenes, {"tooltip": "Scene file from library/scenes"}),
             "base": (["illustrious", "anima"], {"tooltip": "LoRA base folder under loras/"}),
+        }, "optional": {
+            "camera_json": ("STRING", {"forceInput": True,
+                                       "tooltip": "Advanced Camera Control camera_json; replaces camera block"}),
+            "camera_prompt": ("STRING", {"forceInput": True,
+                                         "tooltip": "Advanced Camera Control prompt; used as-is for anima"}),
         }}
 
     RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "STRING")
@@ -33,14 +39,28 @@ class SceneLoader:
 
     # Re-run when any library file changes on disk.
     @classmethod
-    def IS_CHANGED(cls, scene, base):
+    def IS_CHANGED(cls, scene, base, camera_json=None, camera_prompt=None):
         return Library(library_root()).fingerprint()
 
+    # Return camera tags from 3D inputs: natural prompt for anima, booru tags for illustrious.
+    @staticmethod
+    def camera_override(base, camera_json, camera_prompt):
+        if not camera_json and not camera_prompt:
+            return None
+        if base == "anima" and camera_prompt:
+            return camera_prompt.strip()
+        if camera_json:
+            return camera_tags_from_json(camera_json, camera_prompt or "")
+        return camera_prompt.strip()
+
     # Assemble the selected scene into prompts and SimplePowerLora stacks.
-    def load(self, scene, base):
+    def load(self, scene, base, camera_json=None, camera_prompt=None):
         lib = Library(library_root())
         try:
-            result = assemble(lib, scene)
+            camera = self.camera_override(base, camera_json, camera_prompt)
+            if camera is not None:
+                print(f"[SceneLoader] {scene}: 3d camera -> {camera}")
+            result = assemble(lib, scene, camera)
         except SceneError as e:
             print(f"[SceneLoader] {scene}: {e}")
             raise
