@@ -27,6 +27,21 @@ async function applySceneFilter(node) {
     node.setDirtyCanvas?.(true, true);
 }
 
+// Return message.text joined as one string, or null when absent.
+function messageText(message) {
+    if (!message || message.text === undefined) return null;
+    return Array.isArray(message.text) ? message.text.join("\n") : String(message.text);
+}
+
+// Write text into a Scene Log node's read-only text field.
+function setLogText(node, text) {
+    const w = node.widgets?.find((x) => x.name === "text");
+    if (!w) return;
+    w.value = text;
+    if (w.inputEl) w.inputEl.readOnly = true;
+    node.setDirtyCanvas?.(true, true);
+}
+
 app.registerExtension({
     name: "SceneLoader.ui",
     async beforeRegisterNodeDef(nodeType, nodeData) {
@@ -57,14 +72,23 @@ app.registerExtension({
             const onExecuted = nodeType.prototype.onExecuted;
             nodeType.prototype.onExecuted = function (message) {
                 onExecuted?.apply(this, arguments);
-                if (!message || message.text === undefined) return;
-                const t = Array.isArray(message.text) ? message.text.join("\n") : message.text;
-                const w = this.widgets?.find((x) => x.name === "log_view");
-                if (w) {
-                    w.value = t;
-                    if (w.inputEl) w.inputEl.readOnly = true;
-                    this.setDirtyCanvas(true, true);
+                const t = messageText(message);
+                if (t === null) return;
+                // Push the log into every Scene Log connected to the "log" output.
+                const out = this.outputs?.find((o) => o.name === "log");
+                for (const linkId of out?.links || []) {
+                    const link = this.graph?.links?.[linkId] ?? this.graph?.links?.get?.(linkId);
+                    const target = link && this.graph.getNodeById(link.target_id);
+                    if (target?.comfyClass === "SceneLog") setLogText(target, t);
                 }
+            };
+        }
+        if (nodeData.name === "SceneLog") {
+            const onExecuted = nodeType.prototype.onExecuted;
+            nodeType.prototype.onExecuted = function (message) {
+                onExecuted?.apply(this, arguments);
+                const t = messageText(message);
+                if (t !== null) setLogText(this, t);
             };
         }
     },

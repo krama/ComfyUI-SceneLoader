@@ -92,8 +92,6 @@ class SceneSave(SaveImage):
                 "positive": ("STRING", {"forceInput": True, "tooltip": "Final positive prompt"}),
                 "negative": ("STRING", {"forceInput": True, "tooltip": "Final negative prompt"}),
                 "info": ("STRING", {"forceInput": True, "tooltip": "Scene Loader info"}),
-                "log_view": ("STRING", {"multiline": True, "default": "",
-                                        "tooltip": "Filled with the log after each run; not used as input"}),
             },
             "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
         }
@@ -105,7 +103,7 @@ class SceneSave(SaveImage):
 
     # Save PNGs via SaveImage, then write a .txt log next to each file.
     def save_with_log(self, images, filename_prefix="sceneloader/image", positive="", negative="",
-                      info="", log_view="", prompt=None, extra_pnginfo=None):
+                      info="", prompt=None, extra_pnginfo=None):
         out = self.save_images(images, filename_prefix, prompt, extra_pnginfo)
         height, width = images[0].shape[0], images[0].shape[1]
         logs = []
@@ -121,6 +119,27 @@ class SceneSave(SaveImage):
         return {"ui": {**out["ui"], "text": [joined]}, "result": (images, joined)}
 
 
+class SceneLog:
+    """Read-only view of a Scene Save log; also filled by the frontend when only Scene Save runs."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {"log": ("STRING", {"forceInput": True})},
+            "optional": {"text": ("STRING", {"multiline": True, "default": "",
+                                             "tooltip": "Display only; filled after each run"})},
+        }
+
+    RETURN_TYPES = ()
+    FUNCTION = "show"
+    OUTPUT_NODE = True
+    CATEGORY = "SceneLoader"
+
+    # Pass the log to the UI text field.
+    def show(self, log, text=""):
+        return {"ui": {"text": [log]}}
+
+
 # Expose {scene: base} for the frontend scene filter.
 try:
     from aiohttp import web
@@ -132,8 +151,8 @@ try:
 except Exception as e:  # server not available (tests, CLI)
     print(f"[SceneLoader] scene filter route not registered: {e}")
 
-NODE_CLASS_MAPPINGS = {"SceneLoader": SceneLoader, "SceneSave": SceneSave}
+NODE_CLASS_MAPPINGS = {"SceneLoader": SceneLoader, "SceneSave": SceneSave, "SceneLog": SceneLog}
 WEB_DIRECTORY = "./web"
-NODE_DISPLAY_NAME_MAPPINGS = {"SceneLoader": "Scene Loader", "SceneSave": "Scene Save"}
+NODE_DISPLAY_NAME_MAPPINGS = {"SceneLoader": "Scene Loader", "SceneSave": "Scene Save", "SceneLog": "Scene Log"}
 
 print(f"[SceneLoader] loaded - {len(NODE_CLASS_MAPPINGS)} nodes, library: {library_root()}")
