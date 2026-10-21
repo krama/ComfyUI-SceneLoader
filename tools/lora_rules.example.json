@@ -1,0 +1,27 @@
+{
+  "trusted_slots": ["clothing", "background"],
+  "merge": {"detailer": "detail"},
+  "slots": {
+    "lighting": ["lighting", "light", "glow", "sunset lighting"],
+    "detail": ["detail", "detailer", "enhancer", "booster", "quality"],
+    "slider": ["slider"],
+    "style": ["style", "artist", "art style", "painting", "sketch"],
+    "background": ["background", "scenery", "room", "forest", "city", "street"],
+    "clothing": ["outfit", "dress", "jacket", "shirt", "skirt", "uniform", "costume"]
+  },
+  "subfolders": {
+    "clothing": {
+      "top": ["shirt", "blouse", "sweater"],
+      "bottom": ["skirt", "pants", "shorts"],
+      "outerwear": ["jacket", "coat"],
+      "footwear": ["shoes", "boots"],
+      "accessories": ["hat", "gloves", "jewelry"],
+      "full": ["dress", "uniform", "costume", "armor"]
+    },
+    "background": {
+      "interior-home": ["bedroom", "living room", "kitchen"],
+      "exterior-nature": ["forest", "mountain", "beach"],
+      "exterior-urban": ["city", "street", "rooftop"]
+    }
+  }
+}
