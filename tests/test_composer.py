@@ -6,7 +6,7 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from sceneloader.assembler import Library, SceneError, assemble, to_lora_stack  # noqa: E402
-from sceneloader.composer import (block_loras, camera_input_tags, compose, load_preset, save_preset,  # noqa: E402
+from sceneloader.composer import (block_loras, camera_input_tags, compose, dedupe_tags, load_preset, save_preset,  # noqa: E402
                                   slot_options)
 
 EXAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples")
@@ -177,8 +177,20 @@ def test_detailer_row():
     assert any("without a file" in n for n in r["notes"]), r["notes"]
 
 
+def test_dedupe_tags():
+    text, removed = dedupe_tags(
+        "1girl, Smile, long_hair, (smile:1.2), long hair, (low quality, worst quality:1.4), worst quality, "
+        "blue eyes, (blue eyes:1.1), <lora:x:0.5>, sketch, sketch, (low quality, worst quality:1.4)")
+    assert text == "1girl, long_hair, (smile:1.2), (low quality, worst quality:1.4), (blue eyes:1.1), " \
+                   "<lora:x:0.5>, sketch", text
+    assert removed == ["Smile", "long hair", "worst quality", "blue eyes", "sketch",
+                       "(low quality, worst quality:1.4)"], removed
+    assert dedupe_tags("a, b, c") == ("a, b, c", [])
+    assert dedupe_tags("") == ("", [])
+
+
 if __name__ == "__main__":
     for fn in (test_compose_order_weights_triggers, test_not_chosen_and_missing, test_slot_options,
-               test_block_lora_weights, test_camera_input, test_scene_preset_roundtrip, test_detailer_row):
+               test_block_lora_weights, test_camera_input, test_scene_preset_roundtrip, test_detailer_row, test_dedupe_tags):
         fn()
         print(f"ok  {fn.__name__}")

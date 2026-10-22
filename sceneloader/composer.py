@@ -253,11 +253,70 @@ def save_preset(lib, name, base, rows, overwrite=False):
     return path
 
 
+# Split a prompt on top-level commas; commas inside (), [] or {} stay in their group.
+def split_tags(text):
+    out, cur, depth = [], [], 0
+    for ch in text or "":
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            out.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    out.append("".join(cur).strip())
+    return [t for t in out if t]
+
+
+WEIGHT_TAIL = re.compile(r":\s*-?\d+(?:\.\d+)?\s*$")
+
+
+# Return (keys, weighted) for a token: normalized tag names and whether it carries emphasis.
+def tag_keys(token):
+    if token.startswith("<"):  # <lora:...> and other embeds compare as-is
+        return [token.lower()], False
+    inner = token
+    weighted = False
+    while len(inner) > 1 and inner[0] in "([{" and inner[-1] in ")]}":
+        inner, weighted = inner[1:-1].strip(), True
+    if WEIGHT_TAIL.search(inner):
+        inner, weighted = WEIGHT_TAIL.sub("", inner), True
+    keys = [re.sub(r"[\s_]+", " ", k.strip("()[]{} ").replace("\\", "")).lower() for k in split_tags(inner)]
+    return [k for k in keys if k], weighted
+
+
+# Remove repeated tags (case and _/space insensitive): keep the first one, a weighted variant wins.
+def dedupe_tags(text):
+    tokens = [(t, *tag_keys(t)) for t in split_tags(text)]
+    weighted_keys = {k for _, keys, w in tokens if w for k in keys}
+    kept, removed, seen = [], [], set()
+    for tok, keys, weighted in tokens:
+        if not keys:
+            continue
+        if weighted:
+            if all(k in seen for k in keys):
+                removed.append(tok)
+                continue
+        elif any(k in weighted_keys for k in keys) or all(k in seen for k in keys):
+            removed.append(tok)
+            continue
+        kept.append(tok)
+        seen.update(keys)
+    return ", ".join(kept), removed
+
+
 # Assemble composer rows; camera (tags) replaces the camera slot when not None. Same result as assemble.
 def compose(lib, loras_dir, base, rows, camera=None):
     notes = []
     scene = rows_to_scene(rows, loras_dir, base, notes, camera)
-    return assemble_raw(lib, scene, "composer", None, notes)
+    result = assemble_raw(lib, scene, "composer", None, notes)
+    for key in ("positive", "negative"):
+        result[key], removed = dedupe_tags(result[key])
+        if removed:
+            notes.append(f"{key}: duplicate tags removed: {', '.join(removed)}")
+    return result
 
 
 # Turn the camera input into tags: Advanced Camera Control camera_json -> booru tags (illustrious),
