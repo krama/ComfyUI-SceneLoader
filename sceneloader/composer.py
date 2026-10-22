@@ -149,8 +149,13 @@ def rows_to_scene(rows, loras_dir, base, notes, camera=None):
         if row.get("none"):
             continue
         if slot == "detailer":
-            children.append({"kind": "detailer", "name": "detailer",
-                             **{k: row[k] for k in ("drop", "add", "override") if row.get(k)}})
+            delta = {k: row[k] for k in ("drop", "add", "override") if row.get(k)}
+            if delta.get("add"):
+                empty = [a for a in delta["add"] if not (isinstance(a, dict) and a.get("file"))]
+                if empty:
+                    notes.append(f"{where}: {len(empty)} detailer LoRA row(s) without a file ignored")
+                delta["add"] = [a for a in delta["add"] if a not in empty]
+            children.append({"kind": "detailer", "name": "detailer", **delta})
         elif row.get("use") == CAMERA_INPUT:
             if camera is None:
                 raise SceneError(f"{where}: '{CAMERA_INPUT}' needs camera_json or camera_prompt connected")

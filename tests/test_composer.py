@@ -154,8 +154,19 @@ def test_scene_preset_roundtrip():
             raise AssertionError("Scene Loader must refuse composer presets")
 
 
+def test_detailer_row():
+    lib = Library(EXAMPLES)
+    rows = [{"slot": "character", "use": "characters/example_girl"},
+            {"slot": "detailer", "drop": ["slider"], "override": [{"type": "character", "weight": 1.0}],
+             "add": [{"file": ""}, {"file": "detail/x.safetensors"}]}]
+    r = compose(lib, "/nonexistent", "illustrious", rows)
+    det = {x["file"]: x["weight"] for x in r["loras_detailer"]}
+    assert det == {"character/example_girl.safetensors": 1.0, "detail/x.safetensors": 1.0}, det
+    assert any("without a file" in n for n in r["notes"]), r["notes"]
+
+
 if __name__ == "__main__":
     for fn in (test_compose_order_weights_triggers, test_not_chosen_and_missing, test_slot_options,
-               test_block_lora_weights, test_camera_input_row, test_scene_preset_roundtrip):
+               test_block_lora_weights, test_camera_input_row, test_scene_preset_roundtrip, test_detailer_row):
         fn()
         print(f"ok  {fn.__name__}")

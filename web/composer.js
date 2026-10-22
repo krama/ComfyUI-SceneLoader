@@ -185,6 +185,128 @@ async function presetBar(node, baseW) {
         status);
 }
 
+// Return LoRA types (first folder) present in the main stack: LoRA rows and LoRAs inside blocks.
+function stackTypes(rows, opts) {
+    const types = new Set();
+    for (const r of rows) {
+        if (r.none || r.slot === "detailer") continue;
+        if (r.lora) types.add(r.lora.includes("/") ? r.lora.split("/")[0] : "other");
+        for (const bl of (r.use && opts.blocks?.[r.use]) || []) types.add(bl.type);
+    }
+    return [...types].sort();
+}
+
+// Build the detailer delta editor (drop types, add LoRAs, override weights); returns {el, lines}.
+function detailerSection(node, rows, opts, save) {
+    let det = rows.find((r) => r.slot === "detailer");
+    const ensure = () => {
+        if (!det) {
+            det = { slot: "detailer" };
+            rows.push(det);
+        }
+        return det;
+    };
+    // Drop the detailer row when it holds nothing, so the composition stays clean.
+    const commit = () => {
+        for (const k of ["drop", "add", "override"]) if (det && !det[k]?.length) delete det[k];
+        if (det && Object.keys(det).length === 1) rows.splice(rows.indexOf(det), 1);
+        save();
+        render(node);
+    };
+    const wrap = el("div", { style: "display:flex;flex-direction:column;gap:2px;margin-top:6px;"
+        + "padding-top:4px;border-top:1px solid #444" });
+    let lines = 1;
+
+    const types = [...new Set([...stackTypes(rows, opts), ...(det?.drop || [])])].sort();
+    const chips = el("div", { style: "display:flex;gap:3px;flex-wrap:wrap;align-items:center;min-height:24px" },
+        el("span", { textContent: "detailer drop", style: "width:80px;opacity:.7",
+            title: "LoRA types removed from the detailer stack" }));
+    for (const t of types) {
+        const on = det?.drop?.includes(t);
+        const chip = el("button", { textContent: t, title: on ? "dropped in detailer" : "kept in detailer",
+            style: `padding:0 6px;${on ? "background:#844;text-decoration:line-through" : ""}` });
+        chip.onclick = () => {
+            const d = ensure();
+            d.drop = on ? (d.drop || []).filter((x) => x !== t) : [...(d.drop || []), t];
+            commit();
+        };
+        chips.append(chip);
+    }
+    if (!types.length) chips.append(el("span", { textContent: "(no LoRAs in the stack)", style: "opacity:.5" }));
+    wrap.append(chips);
+
+    const allLoras = Object.keys(opts.loras).sort();
+    const listId = `sc-${node.id}-all-loras`;
+    const list = el("datalist", { id: listId });
+    for (const v of allLoras) list.append(el("option", { value: v }));
+    wrap.append(list);
+    (det?.add || []).forEach((a, k) => {
+        const file = el("input", { value: a.file || "", placeholder: "detailer LoRA - type to search",
+            style: `flex:1;min-width:120px;${a.file && !opts.loras[a.file] ? "outline:1px solid #e66" : ""}` });
+        file.setAttribute("list", listId);
+        file.onchange = () => {
+            a.file = file.value.trim();
+            if (a.weight === undefined && opts.loras[a.file]) a.weight = opts.loras[a.file].w;
+            commit();
+        };
+        const wt = el("input", { type: "number", step: "0.05", value: a.weight ?? "", placeholder: "1.0",
+            style: "width:56px" });
+        wt.onchange = () => {
+            a.weight = wt.value === "" ? 1.0 : Number(wt.value);
+            save();
+        };
+        const del = el("button", { textContent: "✕", title: "remove" });
+        del.onclick = () => {
+            det.add.splice(k, 1);
+            commit();
+        };
+        wrap.append(el("div", { style: "display:flex;gap:4px;align-items:center;height:24px" },
+            el("span", { textContent: "+ add", style: "width:80px;opacity:.7" }), file, wt, del));
+        lines++;
+    });
+    (det?.override || []).forEach((ov, k) => {
+        const sel = el("select", { style: "flex:1", title: "LoRA type whose weight changes in the detailer" });
+        for (const t of [...new Set([...stackTypes(rows, opts), ov.type].filter(Boolean))]) {
+            sel.append(el("option", { value: t, textContent: t }));
+        }
+        if (ov.file) sel.append(el("option", { value: `file:${ov.file}`, textContent: ov.file }));
+        sel.value = ov.file ? `file:${ov.file}` : ov.type || "";
+        sel.onchange = () => {
+            delete ov.file;
+            ov.type = sel.value;
+            save();
+        };
+        const wt = el("input", { type: "number", step: "0.05", value: ov.weight ?? "", style: "width:56px" });
+        wt.onchange = () => {
+            ov.weight = wt.value === "" ? 1.0 : Number(wt.value);
+            save();
+        };
+        const del = el("button", { textContent: "✕", title: "remove" });
+        del.onclick = () => {
+            det.override.splice(k, 1);
+            commit();
+        };
+        wrap.append(el("div", { style: "display:flex;gap:4px;align-items:center;height:24px" },
+            el("span", { textContent: "override", style: "width:80px;opacity:.7" }), sel, wt, del));
+        lines++;
+    });
+    const addBtn = el("button", { textContent: "+ detailer LoRA" });
+    addBtn.onclick = () => {
+        const d = ensure();
+        d.add = [...(d.add || []), { file: "" }]; // weight is taken from the sidecar when a file is picked
+        save();
+        render(node);
+    };
+    const ovBtn = el("button", { textContent: "+ override", disabled: !types.length });
+    ovBtn.onclick = () => {
+        const d = ensure();
+        d.override = [...(d.override || []), { type: types[0], weight: 1.0 }];
+        commit();
+    };
+    wrap.append(el("div", { style: "display:flex;gap:4px" }, addBtn, ovBtn));
+    return { el: wrap, lines: lines + 2 };
+}
+
 // Render the editor for a node into its container.
 async function render(node) {
     const st = node.__composer;
@@ -364,8 +486,11 @@ async function render(node) {
         render(node);
     };
     box.append(el("div", { style: "display:flex;gap:4px;margin-top:4px" }, pick, add, reload));
+    const det = detailerSection(node, rows, opts, save);
+    box.append(det.el);
     save();
-    st.height = (rows.filter((r) => r.slot !== "detailer").length + 3) * ROW_H + 12; // +2 for the preset bar
+    // Rows + preset bar (2) + add-row line (1) + detailer lines.
+    st.height = (rows.filter((r) => r.slot !== "detailer").length + 3 + det.lines) * ROW_H + 12;
     node.setSize([Math.max(node.size[0], 440), node.computeSize()[1]]);
 }
 
