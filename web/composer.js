@@ -56,6 +56,50 @@ function el(tag, props = {}, ...kids) {
     return e;
 }
 
+let popup = null;
+
+// Close the info popup if it is open.
+function closePopup() {
+    popup?.remove();
+    popup = null;
+    document.removeEventListener("pointerdown", onOutside, true);
+    document.removeEventListener("keydown", onEsc, true);
+}
+
+// Close on a press outside the popup (inside it text stays selectable and links work).
+function onOutside(e) {
+    if (popup && !popup.contains(e.target)) closePopup();
+}
+
+// Close on Escape.
+function onEsc(e) {
+    if (e.key === "Escape") closePopup();
+}
+
+// Show text in a scrollable window near the click; URLs become links.
+function showPopup(text, e) {
+    e.stopPropagation();
+    closePopup();
+    const body = el("div", { style: "white-space:pre-wrap;word-break:break-word" });
+    for (const part of text.split(/(https?:\/\/\S+)/)) {
+        body.append(/^https?:\/\//.test(part)
+            ? el("a", { href: part, textContent: part, target: "_blank", rel: "noopener", style: "color:#8cf" })
+            : document.createTextNode(part));
+    }
+    popup = el("div", {
+        id: "scene-composer-popup",
+        style: "position:fixed;z-index:10000;max-width:560px;max-height:60vh;overflow:auto;padding:10px 12px;"
+            + "background:#1e1e1e;color:#ddd;border:1px solid #567;border-radius:6px;font:12px monospace;"
+            + "box-shadow:0 4px 16px rgba(0,0,0,.5);user-select:text",
+    }, body);
+    document.body.append(popup);
+    const r = popup.getBoundingClientRect();
+    popup.style.left = `${Math.max(8, Math.min(e.clientX + 12, innerWidth - r.width - 8))}px`;
+    popup.style.top = `${Math.max(8, Math.min(e.clientY + 12, innerHeight - r.height - 8))}px`;
+    document.addEventListener("pointerdown", onOutside, true);
+    document.addEventListener("keydown", onEsc, true);
+}
+
 // Render the editor for a node into its container.
 async function render(node) {
     const st = node.__composer;
@@ -100,7 +144,23 @@ async function render(node) {
             render(node);
         };
         const line = el("div", { style: "display:flex;gap:4px;align-items:center;height:24px" },
-            el("span", { textContent: row.slot, style: "width:80px;opacity:.7;overflow:hidden" }), item);
+            el("span", { textContent: row.slot, style: "width:80px;opacity:.7;overflow:hidden" }));
+        // Hover info: block file text (+ all LoRAs incl. nested) or LoRA metadata summary.
+        let tip = "";
+        if (row.use && opts.block_text?.[row.use] !== undefined) {
+            const bl = opts.blocks?.[row.use] || [];
+            tip = opts.block_text[row.use].trim()
+                + (bl.length ? "\n\nLoRAs (default weight):\n" + bl.map((x) => `${x.file} @${x.weight}`).join("\n") : "");
+        } else if (row.lora && opts.loras[row.lora]) {
+            tip = `${row.lora}\n${opts.loras[row.lora].i || ""}`;
+        }
+        const info = el("span", {
+            textContent: "i", title: tip,
+            style: `width:14px;text-align:center;border-radius:7px;font-weight:bold;cursor:pointer;`
+                + `visibility:${tip ? "visible" : "hidden"};background:#456;color:#fff`,
+        });
+        info.onclick = (e) => showPopup(tip, e);
+        line.append(info, item);
         // Strength of LoRAs inside a library block; identity (character) LoRAs are fixed by the block.
         for (const bl of (row.use && opts.blocks?.[row.use]) || []) {
             const fixed = bl.type === "character";

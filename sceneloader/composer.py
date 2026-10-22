@@ -75,6 +75,30 @@ def block_loras(lib, ref):
     return out
 
 
+# Return a short human-readable summary of a LoRA sidecar for the UI tooltip.
+def lora_info(meta):
+    if not meta:
+        return "no metadata (.sceneloader.json): weight 1.0, no trigger words"
+    w = meta.get("weight") or {}
+    civ = meta.get("civitai") or {}
+    lines = [f"{meta.get('name') or '?'} | {meta.get('version') or '?'} | {meta.get('base') or '?'}",
+             f"weight: {w.get('min', 1.0)}-{w.get('max', 1.0)} (source: {w.get('source', 'default')})"]
+    tips = {k: v for k, v in (meta.get("usage_tips") or {}).items() if v is not None}
+    if tips:
+        lines.append("civitai usage tips: " + ", ".join(f"{k}={v}" for k, v in tips.items()))
+    for i, t in enumerate(meta.get("trigger_sets") or []):
+        lines.append(f"trigger set {i + 1}: {t}")
+    for key in ("extra_positive", "extra_negative"):
+        if meta.get(key):
+            lines.append(f"{key}: {meta[key]}")
+    if civ.get("modelId"):
+        lines.append(f"https://civitai.com/models/{civ['modelId']}?modelVersionId={civ.get('versionId')}")
+    desc = " ".join(str(meta.get("description") or "").split())
+    if desc:
+        lines.append(desc[:300] + ("..." if len(desc) > 300 else ""))
+    return "\n".join(lines)
+
+
 # Read <lora>.sceneloader.json; missing or broken sidecar gives {}.
 def sidecar(loras_dir, base, rel):
     path = os.path.join(loras_dir, base, os.path.splitext(rel)[0] + SIDECAR)

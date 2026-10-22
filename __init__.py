@@ -7,7 +7,7 @@ import torch
 from nodes import SaveImage
 
 from .sceneloader.prompt_log import build_log
-from .sceneloader.composer import block_loras, compose, sidecar, slot_options
+from .sceneloader.composer import block_loras, compose, lora_info, sidecar, slot_options
 from .sceneloader.assembler import (Library, SceneError, assemble, camera_tags_from_json, report,
                                     scene_base, to_lora_stack, KNOWN_BASES)
 
@@ -216,17 +216,20 @@ try:
             for rel in opt["loras"]:
                 m = sidecar(root, base, rel)
                 meta[rel] = {"w": (m.get("weight") or {}).get("min", 1.0), "t": m.get("trigger_sets") or [],
-                             "x": bool(m.get("extra_positive") or m.get("extra_negative"))}
+                             "x": bool(m.get("extra_positive") or m.get("extra_negative")), "i": lora_info(m)}
         lib = Library(library_root())
-        blocks = {}
+        blocks, block_text = {}, {}
         for opt in slots.values():
             for ref in opt["blocks"]:
                 try:
+                    with open(lib.path("blocks", ref), encoding="utf-8") as fh:
+                        block_text[ref] = fh.read()
                     blocks[ref] = block_loras(lib, ref)
                 except (SceneError, OSError, ValueError) as e:  # broken block: show it without LoRAs
                     print(f"[SceneComposer] block {ref}: {e}")
                     blocks[ref] = []
-        return web.json_response({"slots": slots, "loras": meta, "blocks": blocks})
+                    block_text.setdefault(ref, f"error: {e}")
+        return web.json_response({"slots": slots, "loras": meta, "blocks": blocks, "block_text": block_text})
 except Exception as e:  # server not available (tests, CLI)
     print(f"[SceneLoader] scene filter route not registered: {e}")
 
