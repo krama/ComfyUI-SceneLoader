@@ -97,8 +97,8 @@ class SceneComposer:
                                              "Advanced Camera Control camera_json (booru tags for illustrious)"}),
         }}
 
-    RETURN_TYPES = SceneLoader.RETURN_TYPES
-    RETURN_NAMES = SceneLoader.RETURN_NAMES
+    RETURN_TYPES = SceneLoader.RETURN_TYPES + ("IMAGE",)
+    RETURN_NAMES = SceneLoader.RETURN_NAMES + ("pose_image",)
     FUNCTION = "compose"
     CATEGORY = "SceneLoader"
 
@@ -132,7 +132,18 @@ class SceneComposer:
         print(f"[SceneComposer] {base}: {len(rows)} rows, {len(result['loras'])} loras, "
               f"{len(result['loras_detailer'])} detailer loras, {info.count('  MISSING')} missing")
         return (result["positive"], result["negative"], to_lora_stack(result["loras"], base),
-                to_lora_stack(result["loras_detailer"], base), info)
+                to_lora_stack(result["loras_detailer"], base), info, load_pose_image(result.get("pose_image")))
+
+
+# Load a pose sample image as a ComfyUI IMAGE (1, H, W, 3); no image gives a 64x64 black frame.
+def load_pose_image(path):
+    if not path:
+        return torch.zeros(1, 64, 64, 3)
+    import numpy as np
+    from PIL import Image, ImageOps
+    with Image.open(path) as im:
+        arr = np.asarray(ImageOps.exif_transpose(im).convert("RGB"), dtype=np.float32) / 255.0
+    return torch.from_numpy(arr)[None]
 
 
 # Return the configured loras folder that holds the <base>/ subfolder (first one as fallback).

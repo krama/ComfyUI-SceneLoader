@@ -21,7 +21,7 @@ SLOTS = {
     "body": ("body", None),
     "clothing": ("clothing", "clothing"),
     "expression": ("expression", None),
-    "pose": ("pose", None),
+    "pose": ("pose", "poses"),
     "action": ("action", None),
     "concept": ("concept", None),
     "nsfw": ("nsfw", None),
@@ -316,7 +316,28 @@ def compose(lib, loras_dir, base, rows, camera=None):
         result[key], removed = dedupe_tags(result[key])
         if removed:
             notes.append(f"{key}: duplicate tags removed: {', '.join(removed)}")
+    result["pose_image"] = pose_image(lib, rows, notes)
     return result
+
+
+# Return the sample image path of the first chosen pose block that has one ("image" key), or None.
+def pose_image(lib, rows, notes):
+    for row in rows:
+        if row.get("slot") != "pose" or row.get("none") or not row.get("use"):
+            continue
+        path = lib.path("blocks", row["use"])
+        image = load_yaml(path).get("image")
+        if not image:
+            continue
+        full = os.path.realpath(os.path.join(os.path.dirname(path), str(image)))
+        if not full.startswith(os.path.realpath(lib.root) + os.sep):
+            notes.append(f"pose_image: {row['use']} image outside the library ignored: {image}")
+            continue
+        if os.path.isfile(full):
+            notes.append(f"pose_image <- {row['use']} ({image})")
+            return full
+        notes.append(f"pose_image: {row['use']} image not found: {image}")
+    return None
 
 
 # Turn the camera input into tags: Advanced Camera Control camera_json -> booru tags (illustrious),

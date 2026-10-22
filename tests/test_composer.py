@@ -189,8 +189,37 @@ def test_dedupe_tags():
     assert dedupe_tags("") == ("", [])
 
 
+def test_pose_pack_and_pose_image():
+    import shutil
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+    import import_pose_pack as ipp
+    with tempfile.TemporaryDirectory() as tmp:
+        pack, lib_dir = os.path.join(tmp, "pack"), os.path.join(tmp, "lib")
+        shutil.copytree(EXAMPLES, lib_dir)
+        os.makedirs(os.path.join(pack, "POSES"))
+        with open(os.path.join(pack, "POSES.yaml"), "w") as fh:
+            fh.write("  POSES:\n    bent over:  bent over,\n    indian: sitting, indian style,\n    no-pic: x\n")
+        for name in ("bent over", "indian"):
+            open(os.path.join(pack, "POSES", name + ".jpeg"), "wb").write(b"img")
+        assert ipp.main(["--pack", pack, "--library", lib_dir]) == 0
+        lib = Library(lib_dir)
+        opts = slot_options(lib, "/nonexistent", "illustrious")
+        assert opts["pose"]["blocks"] == ["poses/bent_over", "poses/indian", "poses/no_pic"], opts["pose"]
+        rows = [{"slot": "pose", "use": "poses/no_pic"}, {"slot": "pose", "use": "poses/indian"}]
+        r = compose(lib, "/nonexistent", "illustrious", rows)
+        assert "sitting, indian style" in r["positive"], r["positive"]
+        assert r["pose_image"].endswith(os.path.join("blocks", "poses", "indian.jpeg")), r["pose_image"]
+        assert compose(lib, "/nonexistent", "illustrious", rows[:1])["pose_image"] is None
+        # A block pointing outside the library is ignored.
+        with open(os.path.join(lib_dir, "blocks", "poses", "evil.yaml"), "w") as fh:
+            fh.write("name: evil\nkind: pose\ntags: x\nimage: ../../../pack/POSES/indian.jpeg\n")
+        r = compose(lib, "/nonexistent", "illustrious", [{"slot": "pose", "use": "poses/evil"}])
+        assert r["pose_image"] is None and any("outside the library" in n for n in r["notes"]), r["notes"]
+
+
 if __name__ == "__main__":
     for fn in (test_compose_order_weights_triggers, test_not_chosen_and_missing, test_slot_options,
-               test_block_lora_weights, test_camera_input, test_scene_preset_roundtrip, test_detailer_row, test_dedupe_tags):
+               test_block_lora_weights, test_camera_input, test_scene_preset_roundtrip, test_detailer_row, test_dedupe_tags,
+               test_pose_pack_and_pose_image):
         fn()
         print(f"ok  {fn.__name__}")
