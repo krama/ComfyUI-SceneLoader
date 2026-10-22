@@ -62,9 +62,12 @@ def slot_options(lib, loras_dir, base):
         blocks = []
         if folder:
             d = os.path.join(lib.root, "blocks", folder)
-            if os.path.isdir(d):
-                blocks = sorted(f"{folder}/{os.path.splitext(f)[0]}" for f in os.listdir(d)
-                                if f.endswith((".yaml", ".yml")))
+            # Subfolders are included (e.g. poses/civitai/<name>).
+            for sub, _, files in os.walk(d):
+                rel = os.path.relpath(sub, d).replace(os.sep, "/")
+                prefix = folder if rel == "." else f"{folder}/{rel}"
+                blocks += [f"{prefix}/{os.path.splitext(f)[0]}" for f in files if f.endswith((".yaml", ".yml"))]
+            blocks.sort()
         if slot == "quality":
             blocks = [b for b in blocks if b.split("/")[1] in (base, "default")]
         out[slot] = {"kind": kind, "blocks": blocks, "loras": loras.get(slot, [])}

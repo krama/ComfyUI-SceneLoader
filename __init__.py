@@ -211,6 +211,53 @@ class SMPLXToOpenPose3D:
         return (pose,)
 
 
+class PoseCamera:
+    """Virtual camera around an SMPL-X pose: OpenPose map for ControlNet + camera tags in the prompt."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        from .sceneloader.pose_camera import FRAMING
+        deg = lambda d, lo, hi, tip: ("FLOAT", {"default": d, "min": lo, "max": hi, "step": 1.0, "tooltip": tip})  # noqa: E731
+        return {
+            "required": {
+                "smplx": ("SMPLX", {"tooltip": "SMPL-X pose from SMPLx-Estimator (e.g. Body: NLF)"}),
+                "width": ("INT", {"default": 1024, "min": 64, "max": 8192, "tooltip": "Generation width"}),
+                "height": ("INT", {"default": 1024, "min": 64, "max": 8192, "tooltip": "Generation height"}),
+                "framing": (list(FRAMING), {"default": "full body", "tooltip": "Body parts that must fit"}),
+                "yaw": deg(0.0, -180.0, 180.0, "Turn the camera around the body; 0 = like the sample photo"),
+                "elevation": deg(0.0, -80.0, 89.0, "Camera height angle: + from above, - from below"),
+                "fov": deg(40.0, 10.0, 120.0, "Lens field of view; small = flat tele, large = wide angle"),
+                "zoom": ("FLOAT", {"default": 1.0, "min": 0.3, "max": 4.0, "step": 0.05,
+                                   "tooltip": "> 1 moves closer (crops), < 1 adds room around"}),
+                "shift_x": ("FLOAT", {"default": 0.0, "min": -0.5, "max": 0.5, "step": 0.01,
+                                      "tooltip": "Move the subject in the frame, share of width (+ right)"}),
+                "shift_y": ("FLOAT", {"default": 0.0, "min": -0.5, "max": 0.5, "step": 0.01,
+                                      "tooltip": "Move the subject in the frame, share of height (+ up)"}),
+            },
+            "optional": {
+                "prompt": ("STRING", {"forceInput": True,
+                                      "tooltip": "Prompt to get the camera tags; its own camera tags are replaced"}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("pose_map", "positive", "camera_tags")
+    FUNCTION = "shoot"
+    CATEGORY = "SceneLoader"
+
+    # Render the OpenPose map for the camera and put its tags into the prompt.
+    def shoot(self, smplx, width, height, framing, yaw, elevation, fov, zoom, shift_x, shift_y, prompt=""):
+        from .sceneloader.pose_camera import merge_camera_tags, render_pose
+        model = _smplx_model(smplx["model_path"], smplx.get("gender", "neutral"))
+        img, tags, points = render_pose(model, smplx, width, height, framing, yaw, elevation, fov, zoom,
+                                        shift_x, shift_y)
+        text = ", ".join(tags)
+        seen = sum(p is not None for p in points)
+        print(f"[SceneLoader] Pose Camera {width}x{height}: {text}; {seen}/18 points in frame "
+              f"(yaw {yaw:g}, elevation {elevation:g}, fov {fov:g}, zoom {zoom:g})")
+        return (torch.from_numpy(img.astype("float32") / 255.0)[None], merge_camera_tags(prompt or "", tags), text)
+
+
 _SMPLX_CACHE = {}
 
 
@@ -362,11 +409,11 @@ except Exception as e:  # server not available (tests, CLI)
 
 NODE_CLASS_MAPPINGS = {"SceneLoader": SceneLoader, "SceneComposer": SceneComposer,
                        "SceneSave": SceneSave, "SceneLog": SceneLog, "SMPLXRiggedGLB": SMPLXRiggedGLB,
-                       "SMPLXToOpenPose3D": SMPLXToOpenPose3D}
+                       "SMPLXToOpenPose3D": SMPLXToOpenPose3D, "PoseCamera": PoseCamera}
 WEB_DIRECTORY = "./web"
 NODE_DISPLAY_NAME_MAPPINGS = {"SceneLoader": "Scene Loader", "SceneComposer": "Scene Composer",
                               "SceneSave": "Scene Save", "SceneLog": "Scene Log",
                               "SMPLXRiggedGLB": "SMPL-X -> Rigged GLB",
-                              "SMPLXToOpenPose3D": "SMPL-X -> OpenPose 3D"}
+                              "SMPLXToOpenPose3D": "SMPL-X -> OpenPose 3D", "PoseCamera": "Pose Camera"}
 
 print(f"[SceneLoader] loaded - {len(NODE_CLASS_MAPPINGS)} nodes, library: {library_root()}")

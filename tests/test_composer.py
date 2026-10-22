@@ -217,9 +217,51 @@ def test_pose_pack_and_pose_image():
         assert r["pose_image"] is None and any("outside the library" in n for n in r["notes"]), r["notes"]
 
 
+def test_pose_inbox_import():
+    import shutil
+    import zipfile
+    import numpy as np
+    from PIL import Image
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+    import import_pose_inbox as ipi
+    rng = np.random.default_rng(0)
+    with tempfile.TemporaryDirectory() as tmp:
+        inbox, lib_dir = os.path.join(tmp, "inbox"), os.path.join(tmp, "lib")
+        shutil.copytree(EXAMPLES, lib_dir)
+        os.makedirs(inbox)
+        photo = Image.fromarray(rng.integers(0, 255, (64, 48, 3), np.uint8))
+        skeleton = np.zeros((64, 48, 3), np.uint8)
+        skeleton[30:34, 5:40] = [255, 0, 0]
+        depth = np.repeat(rng.integers(0, 255, (64, 48, 1), np.uint8), 3, 2)
+        pack = os.path.join(tmp, "pk")
+        os.makedirs(pack)
+        photo.save(os.path.join(pack, "render.png"))
+        Image.fromarray(skeleton).save(os.path.join(pack, "openpose.png"))
+        Image.fromarray(depth).save(os.path.join(pack, "depth.png"))
+        with zipfile.ZipFile(os.path.join(inbox, "Dancer Pose.zip"), "w") as z:
+            for f in os.listdir(pack):
+                z.write(os.path.join(pack, f), f"pack/{f}")
+        photo.save(os.path.join(inbox, "kneel.jpg"))
+        open(os.path.join(inbox, "kneel.txt"), "w").write("kneeling,\nfrom side")
+        assert ipi.main(["--inbox", inbox, "--library", lib_dir]) == 0
+        lib = Library(lib_dir)
+        blocks = slot_options(lib, "/nonexistent", "illustrious")["pose"]["blocks"]
+        assert "poses/civitai/dancer_pose" in blocks and "poses/civitai/kneel" in blocks, blocks
+        assert not [b for b in blocks if "openpose" in b or "depth" in b], blocks
+        r = compose(lib, "/nonexistent", "illustrious", [{"slot": "pose", "use": "poses/civitai/kneel"}])
+        assert "kneeling, from side" in r["positive"] and r["pose_image"].endswith("kneel.jpg"), r
+        left = sorted(os.listdir(inbox))
+        assert left == ["_imported"], left  # sources and tag sidecars moved
+        # A second drop with the same name is kept apart, not overwritten.
+        photo.save(os.path.join(inbox, "kneel.jpg"))
+        assert ipi.main(["--inbox", inbox, "--library", lib_dir]) == 0
+        assert sorted(os.listdir(os.path.join(inbox, "_imported"))) == ["Dancer Pose.zip", "kneel.2.jpg", "kneel.jpg",
+                                                                              "kneel.txt"]
+
+
 if __name__ == "__main__":
     for fn in (test_compose_order_weights_triggers, test_not_chosen_and_missing, test_slot_options,
                test_block_lora_weights, test_camera_input, test_scene_preset_roundtrip, test_detailer_row, test_dedupe_tags,
-               test_pose_pack_and_pose_image):
+               test_pose_pack_and_pose_image, test_pose_inbox_import):
         fn()
         print(f"ok  {fn.__name__}")
