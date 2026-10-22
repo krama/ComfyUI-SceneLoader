@@ -1,0 +1,15 @@
+diff --git a/nodes.py b/nodes.py
+index 1955c07..b061848 100644
+--- a/nodes.py
++++ b/nodes.py
+@@ -408,6 +408,10 @@ class OpenPoseEditor:
+             "height": int(image_height),
+             "people": processed_people
+         }
++        # local patch (ComfyUI-SceneLoader): keep 3D points from SMPL-X -> OpenPose 3D
++        extra_3d = next((d.get("_3d_pose_data") for d in pose_point if isinstance(d, dict) and d.get("_3d_pose_data")), None)
++        if extra_3d:
++            data_to_save["_3d_pose_data"] = extra_3d
+         return json.dumps(data_to_save, indent=4)
+     
+     # 渲染DWPose

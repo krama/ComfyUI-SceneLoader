@@ -175,6 +175,43 @@ class SMPLXRiggedGLB:
         return {"ui": {"text": [path]}, "result": (path,)}
 
 
+class SMPLXToOpenPose3D:
+    """SMPL-X pose -> OpenPose keypoints with 3D data for the 3D OpenPose Editor (pose_point input)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "smplx": ("SMPLX", {"tooltip": "SMPL-X pose from SMPLx-Estimator (e.g. Body: NLF)"}),
+            "image": ("IMAGE", {"tooltip": "Sample image; sets the canvas size (also feed it to pose_image)"}),
+        }}
+
+    RETURN_TYPES = ("POSE_KEYPOINT",)
+    RETURN_NAMES = ("pose_point",)
+    FUNCTION = "convert"
+    CATEGORY = "SceneLoader"
+
+    # Pose SMPL-X, take the 18 OpenPose joints and center them on a canvas of the image size.
+    def convert(self, smplx, image):
+        from .sceneloader.smplx_openpose import smplx_to_openpose
+        h, w = int(image.shape[1]), int(image.shape[2])
+        model = _smplx_model(smplx["model_path"], smplx.get("gender", "neutral"))
+        pose = smplx_to_openpose(model, smplx, w, h)
+        print(f"[SceneLoader] SMPL-X -> OpenPose 3D: 18 points on {w}x{h}")
+        return (pose,)
+
+
+_SMPLX_CACHE = {}
+
+
+# Load SMPL-X once per (path, gender); the model is CPU-only and small.
+def _smplx_model(path, gender):
+    from .sceneloader.smplx_rig import load_model
+    key = (path, gender)
+    if key not in _SMPLX_CACHE:
+        _SMPLX_CACHE[key] = load_model(path, gender, 10)
+    return _SMPLX_CACHE[key]
+
+
 class SceneSave(SaveImage):
     """SaveImage that also returns a generation log (final prompt and settings) for Scene Log."""
 
@@ -313,10 +350,12 @@ except Exception as e:  # server not available (tests, CLI)
     print(f"[SceneLoader] scene filter route not registered: {e}")
 
 NODE_CLASS_MAPPINGS = {"SceneLoader": SceneLoader, "SceneComposer": SceneComposer,
-                       "SceneSave": SceneSave, "SceneLog": SceneLog, "SMPLXRiggedGLB": SMPLXRiggedGLB}
+                       "SceneSave": SceneSave, "SceneLog": SceneLog, "SMPLXRiggedGLB": SMPLXRiggedGLB,
+                       "SMPLXToOpenPose3D": SMPLXToOpenPose3D}
 WEB_DIRECTORY = "./web"
 NODE_DISPLAY_NAME_MAPPINGS = {"SceneLoader": "Scene Loader", "SceneComposer": "Scene Composer",
                               "SceneSave": "Scene Save", "SceneLog": "Scene Log",
-                              "SMPLXRiggedGLB": "SMPL-X -> Rigged GLB"}
+                              "SMPLXRiggedGLB": "SMPL-X -> Rigged GLB",
+                              "SMPLXToOpenPose3D": "SMPL-X -> OpenPose 3D"}
 
 print(f"[SceneLoader] loaded - {len(NODE_CLASS_MAPPINGS)} nodes, library: {library_root()}")
