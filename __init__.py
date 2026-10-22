@@ -230,6 +230,14 @@ try:
                     blocks[ref] = []
                     block_text.setdefault(ref, f"error: {e}")
         return web.json_response({"slots": slots, "loras": meta, "blocks": blocks, "block_text": block_text})
+
+    # Full LoRA info (untruncated description) for the composer popup.
+    @PromptServer.instance.routes.get("/sceneloader/composer/lora_info")
+    async def sceneloader_composer_lora_info(request):
+        base, rel = request.query.get("base", ""), request.query.get("file", "").replace("\\", "/")
+        if base not in KNOWN_BASES or not rel or os.path.isabs(rel) or ".." in rel.split("/"):
+            return web.json_response({"error": "bad base or file"}, status=400)
+        return web.json_response({"text": lora_info(sidecar(lora_root(base), base, rel), None)})
 except Exception as e:  # server not available (tests, CLI)
     print(f"[SceneLoader] scene filter route not registered: {e}")
 

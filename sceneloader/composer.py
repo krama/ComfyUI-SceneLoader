@@ -75,8 +75,8 @@ def block_loras(lib, ref):
     return out
 
 
-# Return a short human-readable summary of a LoRA sidecar for the UI tooltip.
-def lora_info(meta):
+# Return a human-readable LoRA sidecar summary; description cut to `limit` chars (None = full).
+def lora_info(meta, limit=300):
     if not meta:
         return "no metadata (.sceneloader.json): weight 1.0, no trigger words"
     w = meta.get("weight") or {}
@@ -93,9 +93,12 @@ def lora_info(meta):
             lines.append(f"{key}: {meta[key]}")
     if civ.get("modelId"):
         lines.append(f"https://civitai.com/models/{civ['modelId']}?modelVersionId={civ.get('versionId')}")
-    desc = " ".join(str(meta.get("description") or "").split())
+    desc = str(meta.get("description") or "").strip()
+    if desc and limit:
+        desc = " ".join(desc.split())
+        desc = desc[:limit] + ("..." if len(desc) > limit else "")
     if desc:
-        lines.append(desc[:300] + ("..." if len(desc) > 300 else ""))
+        lines.append(desc)
     return "\n".join(lines)
 
 

@@ -88,7 +88,7 @@ function showPopup(text, e) {
     }
     popup = el("div", {
         id: "scene-composer-popup",
-        style: "position:fixed;z-index:10000;max-width:560px;max-height:60vh;overflow:auto;padding:10px 12px;"
+        style: "position:fixed;z-index:10000;max-width:min(720px,90vw);max-height:80vh;overflow:auto;padding:10px 12px;"
             + "background:#1e1e1e;color:#ddd;border:1px solid #567;border-radius:6px;font:12px monospace;"
             + "box-shadow:0 4px 16px rgba(0,0,0,.5);user-select:text",
     }, body);
@@ -159,7 +159,22 @@ async function render(node) {
             style: `width:14px;text-align:center;border-radius:7px;font-weight:bold;cursor:pointer;`
                 + `visibility:${tip ? "visible" : "hidden"};background:#456;color:#fff`,
         });
-        info.onclick = (e) => showPopup(tip, e);
+        info.onclick = async (e) => {
+            e.stopPropagation();
+            let text = tip;
+            if (row.lora) {
+                // Full description is loaded on demand; the hover tooltip keeps the short one.
+                try {
+                    const q = `base=${encodeURIComponent(baseW.value)}&file=${encodeURIComponent(row.lora)}`;
+                    const r = await api.fetchApi(`/sceneloader/composer/lora_info?${q}`);
+                    if (r.ok) text = `${row.lora}\n${(await r.json()).text}`;
+                    else console.warn("[SceneComposer] lora_info HTTP", r.status);
+                } catch (err) {
+                    console.warn("[SceneComposer] lora_info failed, showing short info", err);
+                }
+            }
+            showPopup(text, e);
+        };
         line.append(info, item);
         // Strength of LoRAs inside a library block; identity (character) LoRAs are fixed by the block.
         for (const bl of (row.use && opts.blocks?.[row.use]) || []) {
