@@ -7,7 +7,8 @@ import torch
 from nodes import SaveImage
 
 from .sceneloader.prompt_log import build_log
-from .sceneloader.composer import CAMERA_INPUT, block_loras, compose, lora_info, sidecar, slot_options
+from .sceneloader.composer import (CAMERA_INPUT, NAME_RE, block_loras, compose, load_preset, lora_info,
+                                   save_preset, sidecar, slot_options)
 from .sceneloader.assembler import (Library, SceneError, assemble, camera_tags_from_json, report,
                                     scene_base, to_lora_stack, KNOWN_BASES)
 
@@ -235,6 +236,33 @@ try:
                     blocks[ref] = []
                     block_text.setdefault(ref, f"error: {e}")
         return web.json_response({"slots": slots, "loras": meta, "blocks": blocks, "block_text": block_text})
+
+    # Load a scene file (old scene tree or composer preset) as composer rows.
+    @PromptServer.instance.routes.get("/sceneloader/composer/scene")
+    async def sceneloader_composer_scene_get(request):
+        name = request.query.get("name", "")
+        if not NAME_RE.match(name):
+            return web.json_response({"error": f"bad scene name {name!r}"}, status=400)
+        try:
+            return web.json_response(load_preset(Library(library_root()), name))
+        except (SceneError, OSError, ValueError) as e:
+            print(f"[SceneComposer] load scene {name}: {e}")
+            return web.json_response({"error": str(e)}, status=400)
+
+    # Save composer rows as library/scenes/<name>.yaml; 409 when it exists and overwrite is false.
+    @PromptServer.instance.routes.post("/sceneloader/composer/scene")
+    async def sceneloader_composer_scene_post(request):
+        try:
+            body = await request.json()
+            path = save_preset(Library(library_root()), str(body.get("name") or ""), body.get("base"),
+                               body.get("rows"), bool(body.get("overwrite")))
+        except FileExistsError as e:
+            return web.json_response({"error": f"exists: {e}"}, status=409)
+        except (SceneError, OSError, ValueError) as e:
+            print(f"[SceneComposer] save scene: {e}")
+            return web.json_response({"error": str(e)}, status=400)
+        print(f"[SceneComposer] saved scene {path}")
+        return web.json_response({"path": os.path.relpath(path, library_root())})
 
     # Full LoRA info (untruncated description) for the composer popup.
     @PromptServer.instance.routes.get("/sceneloader/composer/lora_info")

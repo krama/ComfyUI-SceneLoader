@@ -40,11 +40,11 @@ function readRows(w) {
 // Return the text shown in a row's item input.
 function rowValue(row) {
     if (row.none) return "none";
-    return row.lora || row.use || "";
+    return row.lora || row.use || row.tags || "";
 }
 
-// Build a row object from slot, item text and the previous row (keeps weight/trigger/extras for LoRAs).
-function makeRow(slot, value, prev) {
+// Build a row from slot and item text: block or LoRA from the slot lists, otherwise plain tags.
+function makeRow(slot, value, prev, o) {
     const v = value.trim();
     if (v === "none") return { slot, none: true };
     if (LORA_RE.test(v)) {
@@ -52,7 +52,12 @@ function makeRow(slot, value, prev) {
         if (prev?.lora === v) for (const k of ["weight", "trigger", "extras"]) if (prev[k] !== undefined) row[k] = prev[k];
         return row;
     }
-    return v ? { slot, use: v } : { slot };
+    if (o?.blocks.includes(v)) {
+        const row = { slot, use: v };
+        if (prev?.use === v) for (const k of ["weights", "tags"]) if (prev[k] !== undefined) row[k] = prev[k];
+        return row;
+    }
+    return v ? { slot, tags: v } : { slot };
 }
 
 // Create an element with properties and children.
@@ -106,17 +111,94 @@ function showPopup(text, e) {
     document.addEventListener("keydown", onEsc, true);
 }
 
+// Fetch {scene: base|null} (shared with Scene Loader); {} on error.
+async function fetchScenes() {
+    try {
+        const r = await api.fetchApi("/sceneloader/scenes");
+        return r.ok ? (await r.json()).scenes || {} : {};
+    } catch (e) {
+        console.warn("[SceneComposer] scene list unavailable", e);
+        return {};
+    }
+}
+
+// Build the preset bar: load a scene into rows, or save rows as library/scenes/<name>.yaml.
+async function presetBar(node, baseW) {
+    const st = node.__composer;
+    const scenes = await fetchScenes();
+    const names = Object.keys(scenes).filter((s) => !scenes[s] || scenes[s] === baseW.value).sort();
+    const pick = el("select", { style: "flex:1;min-width:90px", title: "scenes of this base (or without a base)" });
+    for (const s of names) pick.append(el("option", { value: s, textContent: s }));
+    if (node.properties.scene && names.includes(node.properties.scene)) pick.value = node.properties.scene;
+    const status = el("div", { textContent: st.msg || "", style: `font-size:11px;color:${st.msgColor || "#aaa"}` });
+    const setMsg = (text, color) => {
+        st.msg = text;
+        st.msgColor = color;
+        status.textContent = text;
+        status.style.color = color;
+    };
+    const load = el("button", { textContent: "load", title: "replace rows with the selected scene" });
+    load.onclick = async () => {
+        if (!pick.value) return;
+        if (readRows(st.comp).length && !confirm(`Replace current rows with scene "${pick.value}"?`)) return;
+        const r = await api.fetchApi(`/sceneloader/composer/scene?name=${encodeURIComponent(pick.value)}`);
+        const data = await r.json();
+        if (!r.ok) {
+            console.warn("[SceneComposer] load scene failed", data);
+            setMsg(`load failed: ${data.error}`, "#e66");
+            return;
+        }
+        st.comp.value = JSON.stringify(data.rows);
+        node.properties.scene = pick.value;
+        name.value = pick.value;
+        if (data.base && data.base !== baseW.value) baseW.value = data.base;
+        const warn = data.warnings?.length ? ` (${data.warnings.length} warnings, see console)` : "";
+        if (warn) console.warn("[SceneComposer] scene warnings", data.warnings);
+        st.msg = `loaded ${pick.value}${warn}`;
+        st.msgColor = warn ? "#eb6" : "#6c6";
+        render(node);
+    };
+    const name = el("input", { value: node.properties.scene || "", placeholder: "scene name", style: "width:110px" });
+    const saveBtn = el("button", { textContent: "save", title: "save rows to library/scenes/<name>.yaml" });
+    saveBtn.onclick = async () => {
+        const body = { name: name.value.trim(), base: baseW.value, rows: readRows(st.comp), overwrite: false };
+        let r = await api.fetchApi("/sceneloader/composer/scene", { method: "POST", body: JSON.stringify(body) });
+        if (r.status === 409) {
+            if (!confirm(`Scene "${body.name}" exists. Overwrite?`)) return;
+            body.overwrite = true;
+            r = await api.fetchApi("/sceneloader/composer/scene", { method: "POST", body: JSON.stringify(body) });
+        }
+        const data = await r.json();
+        if (!r.ok) {
+            console.warn("[SceneComposer] save scene failed", data);
+            setMsg(`save failed: ${data.error}`, "#e66");
+            return;
+        }
+        node.properties.scene = body.name;
+        st.msg = `saved ${data.path}`;
+        st.msgColor = "#6c6";
+        render(node);
+    };
+    return el("div", { style: "display:flex;flex-direction:column;gap:2px;margin-bottom:4px" },
+        el("div", { style: "display:flex;gap:4px;align-items:center" },
+            el("span", { textContent: "scene", style: "width:80px;opacity:.7" }), pick, load, name, saveBtn),
+        status);
+}
+
 // Render the editor for a node into its container.
 async function render(node) {
     const st = node.__composer;
     const baseW = node.widgets.find((w) => w.name === "base");
     const opts = await fetchOptions(baseW.value);
     const box = st.box;
+    const bar = opts && (await presetBar(node, baseW));
+    // No awaits below this point: concurrent renders must not interleave DOM changes.
     box.replaceChildren();
     if (!opts) {
         box.append(el("div", { textContent: "Scene Composer: options unavailable (see console)", style: "color:#e66" }));
         return;
     }
+    box.append(bar);
     const order = Object.keys(opts.slots);
     const rows = readRows(st.comp);
     // Keep rows in slot order; stable for rows of one slot.
@@ -136,16 +218,18 @@ async function render(node) {
     rows.forEach((row, i) => {
         if (row.slot === "detailer") return; // edited in the detailer section (later step)
         const o = opts.slots[row.slot];
-        const valid = (v) => v === "none" || (o && (o.blocks.includes(v) || o.loras.includes(v)));
+        // Unknown block or LoRA (deleted or renamed file) is outlined red; free text is plain tags.
+        const missing = (row.use && row.use !== CAMERA_INPUT && !o?.blocks.includes(row.use))
+            || (row.lora && !o?.loras.includes(row.lora));
         const item = el("input", {
-            value: rowValue(row), placeholder: "not chosen - type to search",
-            style: "flex:1;min-width:120px",
+            value: rowValue(row), placeholder: "not chosen - search, or type tags",
+            title: row.tags && !row.use ? "plain tags" : "",
+            style: `flex:1;min-width:120px;${row.tags && !row.use ? "font-style:italic;" : ""}`
+                + (missing ? "outline:1px solid #e66" : ""),
         });
         item.setAttribute("list", `sc-${node.id}-${row.slot}`);
-        const mark = () => (item.style.outline = item.value && !valid(item.value) ? "1px solid #e66" : "");
-        mark();
         item.onchange = () => {
-            rows[i] = makeRow(row.slot, item.value, row);
+            rows[i] = makeRow(row.slot, item.value, row, o);
             save();
             render(node);
         };
@@ -191,6 +275,19 @@ async function render(node) {
                 title: "camera_json / camera_prompt inputs",
                 style: `font-size:11px;white-space:nowrap;color:${linked ? "#6c6" : "#e66"}`,
             }));
+        }
+        if (row.use && row.use !== CAMERA_INPUT) {
+            // Extra tags appended to the block's own tags (e.g. "light smile" on a character).
+            const extra = el("input", {
+                value: row.tags || "", placeholder: "+ tags", title: "extra tags for this block",
+                style: "width:80px",
+            });
+            extra.onchange = () => {
+                if (extra.value.trim()) row.tags = extra.value.trim();
+                else delete row.tags;
+                save();
+            };
+            line.append(extra);
         }
         // Strength of LoRAs inside a library block; identity (character) LoRAs are fixed by the block.
         for (const bl of (row.use && opts.blocks?.[row.use]) || []) {
@@ -268,7 +365,7 @@ async function render(node) {
     };
     box.append(el("div", { style: "display:flex;gap:4px;margin-top:4px" }, pick, add, reload));
     save();
-    st.height = (rows.filter((r) => r.slot !== "detailer").length + 1) * ROW_H + 12;
+    st.height = (rows.filter((r) => r.slot !== "detailer").length + 3) * ROW_H + 12; // +2 for the preset bar
     node.setSize([Math.max(node.size[0], 440), node.computeSize()[1]]);
 }
 
@@ -278,6 +375,7 @@ function setup(node) {
     const comp = node.widgets.find((w) => w.name === "composition");
     const baseW = node.widgets.find((w) => w.name === "base");
     if (!comp || !baseW) return;
+    node.properties = node.properties || {}; // properties.scene: last loaded/saved scene, kept in the workflow
     comp.type = "hidden";
     comp.computeSize = () => [0, -4];
     if (comp.element) comp.element.style.display = "none";

@@ -164,6 +164,8 @@ KNOWN_BASES = ("illustrious", "anima")
 # Return the base a scene is written for, from its "use: quality/<base>" child, else None.
 def scene_base(lib, scene_name):
     raw = load_yaml(lib.path("scenes", scene_name))
+    if "composer" in raw:  # Scene Composer preset stores its base explicitly
+        return raw.get("base") if raw.get("base") in KNOWN_BASES else None
     for child in raw.get("children") or []:
         ref = str((child or {}).get("use") or "") if isinstance(child, dict) else ""
         if ref.startswith("quality/"):
@@ -261,6 +263,8 @@ def apply_detailer(stack, delta, notes):
 # Assemble a scene; camera_override (tags) replaces camera block tags. Returns prompts and stacks.
 def assemble(lib, scene_name, camera_override=None):
     raw = load_yaml(lib.path("scenes", scene_name))
+    if "composer" in raw:
+        raise SceneError(f"scenes/{scene_name}: Scene Composer preset - open it in the Scene Composer node")
     raw.setdefault("name", scene_name.split("/")[-1])
     return assemble_raw(lib, raw, f"scenes/{scene_name}", camera_override)
 

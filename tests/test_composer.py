@@ -5,8 +5,9 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from sceneloader.assembler import Library, SceneError  # noqa: E402
-from sceneloader.composer import block_loras, compose, slot_options  # noqa: E402
+from sceneloader.assembler import Library, SceneError, assemble, to_lora_stack  # noqa: E402
+from sceneloader.composer import (block_loras, compose, load_preset, save_preset,  # noqa: E402
+                                  slot_options)
 
 EXAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples")
 
@@ -115,8 +116,46 @@ def test_camera_input_row():
     assert "3d camera" in slot_options(lib, "/nonexistent", "illustrious")["camera"]["blocks"]
 
 
+def test_scene_preset_roundtrip():
+    import shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        lib_dir = os.path.join(tmp, "lib")
+        shutil.copytree(EXAMPLES, lib_dir)
+        loras = make_loras(os.path.join(tmp, "loras"), {"style/example_watercolor.safetensors": None})
+        lib = Library(lib_dir)
+        # A scene file loaded into the composer assembles exactly like Scene Loader.
+        p = load_preset(lib, "forest_walk")
+        assert p["warnings"] == [], p["warnings"]
+        a, b = assemble(lib, "forest_walk"), compose(lib, loras, "illustrious", p["rows"])
+        for k in ("positive", "negative"):
+            assert a[k] == b[k], (k, a[k], b[k])
+        for k in ("loras", "loras_detailer"):
+            assert to_lora_stack(a[k], "illustrious") == to_lora_stack(b[k], "illustrious"), k
+        # Save as a composer preset, load it back, refuse silent overwrite, reject bad names.
+        rows = p["rows"] + [{"slot": "concept", "tags": "rain"}]
+        save_preset(lib, "mine/walk", "illustrious", rows)
+        back = load_preset(lib, "mine/walk")
+        assert back["rows"] == rows and back["base"] == "illustrious", back
+        assert "mine/walk" in lib.scenes() and lib.scene_bases()["mine/walk"] == "illustrious"
+        for bad, exc in ((("mine/walk", False), FileExistsError), (("../x", True), SceneError)):
+            try:
+                save_preset(lib, bad[0], "illustrious", rows, overwrite=bad[1])
+            except exc:
+                pass
+            else:
+                raise AssertionError(f"expected {exc.__name__} for {bad}")
+        save_preset(lib, "mine/walk", "illustrious", rows[:1], overwrite=True)
+        assert load_preset(lib, "mine/walk")["rows"] == rows[:1]
+        try:
+            assemble(lib, "mine/walk")
+        except SceneError as e:
+            assert "Scene Composer" in str(e)
+        else:
+            raise AssertionError("Scene Loader must refuse composer presets")
+
+
 if __name__ == "__main__":
     for fn in (test_compose_order_weights_triggers, test_not_chosen_and_missing, test_slot_options,
-               test_block_lora_weights, test_camera_input_row):
+               test_block_lora_weights, test_camera_input_row, test_scene_preset_roundtrip):
         fn()
         print(f"ok  {fn.__name__}")

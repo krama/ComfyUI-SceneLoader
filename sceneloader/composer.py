@@ -1,13 +1,17 @@
 """Scene Composer: turn slot rows (library blocks and LoRAs) into a scene and assemble it.
 
 Rows are dicts: {"slot", "use", "weights"?: {lora file: weight}} for a block,
-{"slot", "lora", "weight"?, "trigger"?, "extras"?} for a LoRA, {"slot", "none": true} to skip,
-or a row with neither "use" nor "lora" (not chosen).
+{"slot", "lora", "weight"?, "trigger"?, "extras"?} for a LoRA, {"slot", "tags", "negative"?} for
+plain tags, {"slot", "none": true} to skip, {"slot": "detailer", "drop"/"add"/"override"} for the
+detailer delta, or a row with nothing chosen (an error at run time).
 """
 import json
 import os
+import re
 
-from .assembler import SceneError, assemble_raw, join_tags, resolve
+import yaml
+
+from .assembler import SceneError, assemble_raw, join_tags, load_yaml, resolve, scene_base
 
 # Slot -> (prompt kind, block folder under library/blocks or None). Order is the UI order.
 SLOTS = {
@@ -166,9 +170,79 @@ def rows_to_scene(rows, loras_dir, base, notes, camera=None):
             children.append({"kind": kind, "name": os.path.splitext(os.path.basename(rel))[0],
                              "tags": join_tags([tags, pos, row.get("tags")]), "negative": neg,
                              "loras": [{"file": rel, "weight": weight}]})
+        elif row.get("tags"):
+            children.append({"kind": kind, "name": slot, "tags": row["tags"], "negative": row.get("negative", "")})
         else:
-            raise SceneError(f"{where}: not chosen (pick a block or LoRA, or set none)")
+            raise SceneError(f"{where}: not chosen (pick a block or LoRA, type tags, or set none)")
     return {"kind": "scene", "name": "composer", "children": children}
+
+
+FOLDER_SLOT = {folder: slot for slot, (_, folder) in SLOTS.items() if folder}
+KIND_SLOT = {kind: slot for slot, (kind, _) in SLOTS.items()}
+NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*$")
+
+
+# Convert a scene-file tree into composer rows (nested children are flattened); returns (rows, warnings).
+def scene_to_rows(raw):
+    rows, warnings = [], []
+
+    def walk(children, where):
+        for i, c in enumerate(children or []):
+            here = f"{where}[{i}]"
+            if not isinstance(c, dict):
+                warnings.append(f"{here}: not a mapping, skipped")
+                continue
+            if c.get("kind") == "detailer":
+                rows.append({"slot": "detailer", **{k: c[k] for k in ("drop", "add", "override") if c.get(k)}})
+                continue
+            loras = [x for x in c.get("loras") or [] if isinstance(x, dict) and x.get("file")]
+            if c.get("use"):
+                ref = str(c["use"])
+                row = {"slot": KIND_SLOT.get(c.get("kind"), FOLDER_SLOT.get(ref.split("/")[0], "concept")), "use": ref}
+                if c.get("tags"):
+                    row["tags"] = c["tags"]
+                if loras:
+                    row["weights"] = {x["file"]: float(x.get("weight", 1.0)) for x in loras}
+                rows.append(row)
+            else:
+                slot = KIND_SLOT.get(c.get("kind"), "concept")
+                if c.get("tags") or c.get("negative"):
+                    rows.append({"slot": slot, "tags": c.get("tags") or "", "negative": c.get("negative") or ""})
+                for x in loras:  # inline LoRAs keep the scene weight and add no trigger words
+                    rows.append({"slot": slot, "lora": x["file"], "weight": float(x.get("weight", 1.0)),
+                                 "trigger": "none"})
+                if not (c.get("tags") or c.get("negative") or loras or c.get("children")):
+                    warnings.append(f"{here}: empty block skipped")
+            walk(c.get("children"), f"{here}.children")
+
+    walk(raw.get("children"), "children")
+    return rows, warnings
+
+
+# Load a scene file as composer rows: {"base", "rows", "warnings"}.
+def load_preset(lib, name):
+    raw = load_yaml(lib.path("scenes", name))
+    if isinstance(raw.get("composer"), list):
+        return {"base": raw.get("base"), "rows": raw["composer"], "warnings": []}
+    rows, warnings = scene_to_rows(raw)
+    return {"base": scene_base(lib, name), "rows": rows, "warnings": warnings}
+
+
+# Save composer rows as library/scenes/<name>.yaml; returns the path. Refuses to overwrite unless asked.
+def save_preset(lib, name, base, rows, overwrite=False):
+    if not NAME_RE.match(name or ""):
+        raise SceneError(f"bad scene name {name!r}: use letters, digits, _ - and / for subfolders")
+    if not isinstance(rows, list):
+        raise SceneError("rows must be a list")
+    path = os.path.join(lib.root, "scenes", *name.split("/")) + ".yaml"
+    if os.path.exists(path) and not overwrite:
+        raise FileExistsError(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    data = {"name": name.split("/")[-1], "base": base, "composer": rows}
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("# Scene Composer preset: open it in the Scene Composer node.\n")
+        yaml.safe_dump(data, fh, allow_unicode=True, sort_keys=False, width=120)
+    return path
 
 
 # Assemble composer rows; camera tags are used only by a "3d camera" row. Same result as assemble.
