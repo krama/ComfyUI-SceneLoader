@@ -3,11 +3,9 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const LORA_RE = /\.(safetensors|ckpt|pt)$/i;
-const CAMERA_INPUT = "3d camera"; // same value as composer.CAMERA_INPUT in Python
-
-// True when camera_json or camera_prompt input has a link.
+// True when the "camera" input has a link; it then replaces the camera slot (composer.rows_to_scene).
 function cameraLinked(node) {
-    return !!node.inputs?.some((i) => (i.name === "camera_json" || i.name === "camera_prompt") && i.link != null);
+    return !!node.inputs?.some((i) => i.name === "camera" && i.link != null);
 }
 const ROW_H = 28;
 const cache = {};
@@ -370,7 +368,7 @@ async function render(node) {
         if (row.slot === "detailer") return; // edited in the detailer section (later step)
         const o = opts.slots[row.slot];
         // Unknown block or LoRA (deleted or renamed file) is outlined red; free text is plain tags.
-        const missing = (row.use && row.use !== CAMERA_INPUT && !o?.blocks.includes(row.use))
+        const missing = (row.use && !o?.blocks.includes(row.use))
             || (row.lora && !o?.loras.includes(row.lora));
         const item = el("input", {
             value: rowValue(row), placeholder: "not chosen - search, or type tags",
@@ -396,17 +394,7 @@ async function render(node) {
             tip = `${row.lora}\n${opts.loras[row.lora].i || ""}`;
         }
         line.append(infoButton(tip, row.lora, baseW.value), item);
-        if (row.use === CAMERA_INPUT) {
-            // Show whether Advanced Camera Control is wired into the camera inputs.
-            const linked = cameraLinked(node);
-            item.style.outline = linked ? "" : "1px solid #e66";
-            line.append(el("span", {
-                textContent: linked ? "● linked" : "not linked",
-                title: "camera_json / camera_prompt inputs",
-                style: `font-size:11px;white-space:nowrap;color:${linked ? "#6c6" : "#e66"}`,
-            }));
-        }
-        if (row.use && row.use !== CAMERA_INPUT) {
+        if (row.use) {
             // Extra tags appended to the block's own tags (e.g. "light smile" on a character).
             const extra = el("input", {
                 value: row.tags || "", placeholder: "+ tags", title: "extra tags for this block",
@@ -477,10 +465,9 @@ async function render(node) {
             render(node);
         };
         line.append(del);
-        if (row.slot === "camera" && row.use !== CAMERA_INPUT && !row.none
-            && rows.some((r) => r.slot === "camera" && r.use === CAMERA_INPUT && !r.none)) {
-            line.style.opacity = "0.4"; // same rule as composer.rows_to_scene: 3d camera replaces this row
-            line.title = "replaced by 3d camera (tags and LoRAs are not used)";
+        if (row.slot === "camera" && cameraLinked(node)) {
+            line.style.opacity = "0.4"; // same rule as composer.rows_to_scene: the input replaces this row
+            line.title = "replaced by the camera input (tags and LoRAs are not used)";
         }
         box.append(line);
     });
@@ -498,7 +485,14 @@ async function render(node) {
         await fetchOptions(baseW.value, true);
         render(node);
     };
-    box.append(el("div", { style: "display:flex;gap:4px;margin-top:4px" }, pick, add, reload));
+    const linked = cameraLinked(node);
+    const camState = el("span", {
+        textContent: linked ? "camera: ● input" : "camera: rows",
+        title: linked ? "camera input is connected and replaces the camera slot"
+            : "camera input not connected: camera slot rows are used",
+        style: `margin-left:auto;font-size:11px;align-self:center;color:${linked ? "#6c6" : "#aaa"}`,
+    });
+    box.append(el("div", { style: "display:flex;gap:4px;margin-top:4px" }, pick, add, reload, camState));
     const det = detailerSection(node, rows, opts, save);
     box.append(det.el);
     save();

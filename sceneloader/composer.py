@@ -11,7 +11,8 @@ import re
 
 import yaml
 
-from .assembler import SceneError, assemble_raw, join_tags, load_yaml, resolve, scene_base
+from .assembler import (SceneError, assemble_raw, camera_tags_from_json, join_tags, load_yaml, resolve,
+                        scene_base)
 
 # Slot -> (prompt kind, block folder under library/blocks or None). Order is the UI order.
 SLOTS = {
@@ -35,7 +36,7 @@ SLOTS = {
 STACK_ONLY = {"detail", "slider"}
 LORA_EXT = (".safetensors", ".ckpt", ".pt")
 SIDECAR = ".sceneloader.json"
-# Camera slot value that takes tags from the camera_json/camera_prompt inputs (3D camera).
+# Legacy camera row value from an earlier composer version; such rows are now ignored.
 CAMERA_INPUT = "3d camera"
 
 
@@ -66,8 +67,6 @@ def slot_options(lib, loras_dir, base):
                                 if f.endswith((".yaml", ".yml")))
         if slot == "quality":
             blocks = [b for b in blocks if b.split("/")[1] in (base, "default")]
-        if slot == "camera":
-            blocks = [CAMERA_INPUT] + blocks
         out[slot] = {"kind": kind, "blocks": blocks, "loras": loras.get(slot, [])}
     return out
 
@@ -142,17 +141,20 @@ def lora_defaults(meta, row):
 # Convert composer rows into a scene mapping (the scene file format).
 def rows_to_scene(rows, loras_dir, base, notes, camera=None):
     children = []
-    # A "3d camera" row replaces every other camera-slot row (their tags and LoRAs).
-    cam3d = any(r.get("slot") == "camera" and r.get("use") == CAMERA_INPUT and not r.get("none") for r in rows)
+    # A connected camera input replaces the whole camera slot (tags and LoRAs of its rows).
+    if camera is not None:
+        children.append({"kind": "camera", "name": "camera input", "tags": camera})
+        notes.append(f"camera slot <- camera input: {camera}")
     for i, row in enumerate(rows):
         slot = str(row.get("slot") or "")
         kind = SLOTS.get(slot, ("concept", None))[0]
         where = f"row {i + 1} ({slot})"
         if row.get("none"):
             continue
-        if cam3d and slot == "camera" and row.get("use") != CAMERA_INPUT:
+        if slot == "camera" and (camera is not None or row.get("use") == CAMERA_INPUT):
             what = row.get("use") or row.get("lora") or row.get("tags") or "empty row"
-            notes.append(f"{where}: {what} replaced by {CAMERA_INPUT}")
+            notes.append(f"{where}: {what} " + ("replaced by camera input" if camera is not None
+                                                 else "ignored (legacy value, connect the camera input)"))
             continue
         if slot == "detailer":
             delta = {k: row[k] for k in ("drop", "add", "override") if row.get(k)}
@@ -162,11 +164,6 @@ def rows_to_scene(rows, loras_dir, base, notes, camera=None):
                     notes.append(f"{where}: {len(empty)} detailer LoRA row(s) without a file ignored")
                 delta["add"] = [a for a in delta["add"] if a not in empty]
             children.append({"kind": "detailer", "name": "detailer", **delta})
-        elif row.get("use") == CAMERA_INPUT:
-            if camera is None:
-                raise SceneError(f"{where}: '{CAMERA_INPUT}' needs camera_json or camera_prompt connected")
-            children.append({"kind": kind, "name": CAMERA_INPUT, "tags": camera})
-            notes.append(f"{where}: tags from 3d camera input")
         elif row.get("use"):
             # "weights" overrides the strength of LoRAs inside the block (identity LoRAs stay fixed).
             loras = [{"file": f, "weight": float(w)} for f, w in (row.get("weights") or {}).items()]
@@ -256,10 +253,25 @@ def save_preset(lib, name, base, rows, overwrite=False):
     return path
 
 
-# Assemble composer rows; camera tags are used only by a "3d camera" row. Same result as assemble.
+# Assemble composer rows; camera (tags) replaces the camera slot when not None. Same result as assemble.
 def compose(lib, loras_dir, base, rows, camera=None):
     notes = []
     scene = rows_to_scene(rows, loras_dir, base, notes, camera)
-    if camera is not None and not any(r.get("use") == CAMERA_INPUT for r in rows):
-        notes.append(f"camera input connected but unused: set a camera row to '{CAMERA_INPUT}'")
     return assemble_raw(lib, scene, "composer", None, notes)
+
+
+# Turn the camera input into tags: Advanced Camera Control camera_json -> booru tags (illustrious),
+# any other text is used as-is. Empty input gives None (camera slot rows are used).
+def camera_input_tags(base, value):
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        is_json = isinstance(json.loads(text), dict)
+    except ValueError:
+        is_json = False
+    if not is_json:
+        return text
+    if base == "anima":
+        raise SceneError("camera input: anima needs a text prompt, connect the 'prompt' output instead of camera_json")
+    return camera_tags_from_json(text)

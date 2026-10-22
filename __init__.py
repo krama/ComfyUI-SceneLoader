@@ -7,7 +7,7 @@ import torch
 from nodes import SaveImage
 
 from .sceneloader.prompt_log import build_log
-from .sceneloader.composer import (CAMERA_INPUT, NAME_RE, block_loras, compose, load_preset, lora_info,
+from .sceneloader.composer import (NAME_RE, block_loras, camera_input_tags, compose, load_preset, lora_info,
                                    save_preset, sidecar, slot_options)
 from .sceneloader.assembler import (Library, SceneError, assemble, camera_tags_from_json, report,
                                     scene_base, to_lora_stack, KNOWN_BASES)
@@ -91,7 +91,11 @@ class SceneComposer:
             "base": (list(KNOWN_BASES), {"tooltip": "LoRA base folder under loras/"}),
             "composition": ("STRING", {"multiline": True, "default": "[]",
                                        "tooltip": "Slot rows as JSON; edited by the composer UI"}),
-        }, "optional": SceneLoader.INPUT_TYPES()["optional"]}
+        }, "optional": {
+            "camera": ("STRING", {"forceInput": True,
+                                  "tooltip": "Replaces the camera slot when connected: text tags/prompt, or "
+                                             "Advanced Camera Control camera_json (booru tags for illustrious)"}),
+        }}
 
     RETURN_TYPES = SceneLoader.RETURN_TYPES
     RETURN_NAMES = SceneLoader.RETURN_NAMES
@@ -100,18 +104,20 @@ class SceneComposer:
 
     # Re-run when any library file changes on disk.
     @classmethod
-    def IS_CHANGED(cls, base, composition, camera_json=None, camera_prompt=None):
+    def IS_CHANGED(cls, base, composition, camera=None):
         return Library(library_root()).fingerprint()
 
     # Assemble the rows into prompts and SimplePowerLora stacks.
-    def compose(self, base, composition, camera_json=None, camera_prompt=None):
+    def compose(self, base, composition, camera=None):
         lib = Library(library_root())
         try:
             rows = json.loads(composition or "[]")
             if not isinstance(rows, list):
                 raise SceneError("composition must be a JSON list of rows")
-            camera = SceneLoader.camera_override(base, camera_json, camera_prompt)
-            result = compose(lib, lora_root(base), base, rows, camera)
+            cam = camera_input_tags(base, camera)
+            if cam is not None:
+                print(f"[SceneComposer] camera input -> {cam}")
+            result = compose(lib, lora_root(base), base, rows, cam)
         except (SceneError, ValueError) as e:
             print(f"[SceneComposer] {base}: {e}")
             raise SceneError(str(e))
@@ -222,11 +228,6 @@ try:
         blocks, block_text = {}, {}
         for opt in slots.values():
             for ref in opt["blocks"]:
-                if ref == CAMERA_INPUT:
-                    blocks[ref] = []
-                    block_text[ref] = ("Camera tags from the camera_json / camera_prompt inputs\n"
-                                       "(Advanced Camera Control Prompt Generator).")
-                    continue
                 try:
                     with open(lib.path("blocks", ref), encoding="utf-8") as fh:
                         block_text[ref] = fh.read()

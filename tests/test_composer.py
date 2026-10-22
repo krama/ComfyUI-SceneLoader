@@ -6,7 +6,7 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from sceneloader.assembler import Library, SceneError, assemble, to_lora_stack  # noqa: E402
-from sceneloader.composer import (block_loras, compose, load_preset, save_preset,  # noqa: E402
+from sceneloader.composer import (block_loras, camera_input_tags, compose, load_preset, save_preset,  # noqa: E402
                                   slot_options)
 
 EXAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples")
@@ -97,32 +97,35 @@ def test_block_lora_weights():
     assert any("identity LoRA" in n for n in r["notes"]), r["notes"]
 
 
-def test_camera_input_row():
+def test_camera_input():
     lib = Library(EXAMPLES)
-    rows = [{"slot": "camera", "use": "3d camera"}, {"slot": "quality", "use": "quality/default"},
-            {"slot": "background", "use": "backgrounds/forest_path"}]
-    pos = compose(lib, "/nonexistent", "illustrious", rows, "from above, full body")["positive"]
-    assert pos.index("forest") < pos.index("from above"), pos  # camera keeps its prompt position
-    try:
-        compose(lib, "/nonexistent", "illustrious", rows, None)
-    except SceneError as e:
-        assert "camera_json" in str(e), e
-    else:
-        raise AssertionError("3d camera row without input must fail")
-    # 3d camera replaces other camera rows: block tags and camera LoRAs are dropped.
     with tempfile.TemporaryDirectory() as tmp:
         make_loras(tmp, {"camera/fisheye.safetensors": {"weight": {"min": 0.7}, "trigger_sets": ["fisheye"]}})
-        mixed = rows + [{"slot": "camera", "lora": "camera/fisheye.safetensors"},
-                        {"slot": "camera", "use": "cameras/cowboy_shot"}]
-        r = compose(lib, tmp, "illustrious", mixed, "from above")
-        assert "fisheye" not in r["positive"] and "cowboy shot" not in r["positive"], r["positive"]
-        assert "from above" in r["positive"] and r["loras"] == [], r
-        assert sum("replaced by 3d camera" in n for n in r["notes"]) == 2, r["notes"]
-    block = [{"slot": "camera", "use": "cameras/cowboy_shot"}]
-    r = compose(lib, "/nonexistent", "illustrious", block, "from above")
-    assert "from above" not in r["positive"] and "cowboy shot" in r["positive"], r["positive"]
-    assert any("unused" in n for n in r["notes"]), r["notes"]
-    assert "3d camera" in slot_options(lib, "/nonexistent", "illustrious")["camera"]["blocks"]
+        rows = [{"slot": "quality", "use": "quality/default"}, {"slot": "background", "use": "backgrounds/forest_path"},
+                {"slot": "camera", "lora": "camera/fisheye.safetensors"}, {"slot": "camera", "use": "cameras/cowboy_shot"}]
+        # Not connected: camera slot rows are used (tags + LoRA).
+        r = compose(lib, tmp, "illustrious", rows, None)
+        assert "fisheye" in r["positive"] and "cowboy shot" in r["positive"], r["positive"]
+        assert [x["file"] for x in r["loras"]] == ["camera/fisheye.safetensors"], r["loras"]
+        # Connected: the input replaces the whole camera slot, in the camera prompt position.
+        r = compose(lib, tmp, "illustrious", rows, "from above, full body")
+        pos = r["positive"]
+        assert "fisheye" not in pos and "cowboy shot" not in pos and r["loras"] == [], r
+        assert pos.index("forest") < pos.index("from above"), pos
+        assert sum("replaced by camera input" in n for n in r["notes"]) == 2, r["notes"]
+        # Connected without any camera row: tags are still added.
+        assert "from above" in compose(lib, tmp, "illustrious", rows[:2], "from above")["positive"]
+    # Input value: text as-is, camera_json -> booru tags for illustrious, error for anima, empty -> None.
+    cam = json.dumps({"camera": {"shot_type": "full_shot", "tilt_deg": "tilt down 30.0", "pan_deg": "pan 0"}})
+    assert camera_input_tags("anima", "  a low angle shot ") == "a low angle shot"
+    assert "full body" in camera_input_tags("illustrious", cam) and "from above" in camera_input_tags("illustrious", cam)
+    assert camera_input_tags("illustrious", "  ") is None and camera_input_tags("illustrious", None) is None
+    try:
+        camera_input_tags("anima", cam)
+    except SceneError as e:
+        assert "prompt" in str(e), e
+    else:
+        raise AssertionError("anima must refuse camera_json")
 
 
 def test_scene_preset_roundtrip():
@@ -176,6 +179,6 @@ def test_detailer_row():
 
 if __name__ == "__main__":
     for fn in (test_compose_order_weights_triggers, test_not_chosen_and_missing, test_slot_options,
-               test_block_lora_weights, test_camera_input_row, test_scene_preset_roundtrip, test_detailer_row):
+               test_block_lora_weights, test_camera_input, test_scene_preset_roundtrip, test_detailer_row):
         fn()
         print(f"ok  {fn.__name__}")
