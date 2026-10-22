@@ -111,6 +111,31 @@ function showPopup(text, e) {
     document.addEventListener("keydown", onEsc, true);
 }
 
+// "i" button: hover shows tip; click opens a popup (full LoRA description loaded when lora is set).
+function infoButton(tip, lora, base) {
+    const info = el("span", {
+        textContent: "i", title: tip,
+        style: "width:14px;flex:none;text-align:center;border-radius:7px;font-weight:bold;cursor:pointer;"
+            + `visibility:${tip ? "visible" : "hidden"};background:#456;color:#fff`,
+    });
+    info.onclick = async (e) => {
+        e.stopPropagation();
+        let text = tip;
+        if (lora) {
+            try {
+                const q = `base=${encodeURIComponent(base)}&file=${encodeURIComponent(lora)}`;
+                const r = await api.fetchApi(`/sceneloader/composer/lora_info?${q}`);
+                if (r.ok) text = `${lora}\n${(await r.json()).text}`;
+                else console.warn("[SceneComposer] lora_info HTTP", r.status);
+            } catch (err) {
+                console.warn("[SceneComposer] lora_info failed, showing short info", err);
+            }
+        }
+        showPopup(text, e);
+    };
+    return info;
+}
+
 // Fetch {scene: base|null} (shared with Scene Loader); {} on error.
 async function fetchScenes() {
     try {
@@ -260,8 +285,12 @@ function detailerSection(node, rows, opts, save) {
             det.add.splice(k, 1);
             commit();
         };
+        const known = a.file && opts.loras[a.file] ? a.file : "";
+        const tip = known ? `${known}\n${opts.loras[known].i || ""}` : "";
+        const base = node.widgets.find((w) => w.name === "base").value;
         wrap.append(el("div", { style: "display:flex;gap:4px;align-items:center;height:24px" },
-            el("span", { textContent: "+ add", style: "width:80px;opacity:.7" }), file, wt, del));
+            el("span", { textContent: "+ add", style: "width:80px;opacity:.7" }),
+            infoButton(tip, known, base), file, wt, del));
         lines++;
     });
     (det?.override || []).forEach((ov, k) => {
@@ -304,7 +333,7 @@ function detailerSection(node, rows, opts, save) {
         commit();
     };
     wrap.append(el("div", { style: "display:flex;gap:4px" }, addBtn, ovBtn));
-    return { el: wrap, lines: lines + 2 };
+    return { el: wrap, lines: lines + 1 }; // + the buttons line
 }
 
 // Render the editor for a node into its container.
@@ -366,28 +395,7 @@ async function render(node) {
         } else if (row.lora && opts.loras[row.lora]) {
             tip = `${row.lora}\n${opts.loras[row.lora].i || ""}`;
         }
-        const info = el("span", {
-            textContent: "i", title: tip,
-            style: `width:14px;text-align:center;border-radius:7px;font-weight:bold;cursor:pointer;`
-                + `visibility:${tip ? "visible" : "hidden"};background:#456;color:#fff`,
-        });
-        info.onclick = async (e) => {
-            e.stopPropagation();
-            let text = tip;
-            if (row.lora) {
-                // Full description is loaded on demand; the hover tooltip keeps the short one.
-                try {
-                    const q = `base=${encodeURIComponent(baseW.value)}&file=${encodeURIComponent(row.lora)}`;
-                    const r = await api.fetchApi(`/sceneloader/composer/lora_info?${q}`);
-                    if (r.ok) text = `${row.lora}\n${(await r.json()).text}`;
-                    else console.warn("[SceneComposer] lora_info HTTP", r.status);
-                } catch (err) {
-                    console.warn("[SceneComposer] lora_info failed, showing short info", err);
-                }
-            }
-            showPopup(text, e);
-        };
-        line.append(info, item);
+        line.append(infoButton(tip, row.lora, baseW.value), item);
         if (row.use === CAMERA_INPUT) {
             // Show whether Advanced Camera Control is wired into the camera inputs.
             const linked = cameraLinked(node);
