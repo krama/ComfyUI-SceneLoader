@@ -142,11 +142,17 @@ def lora_defaults(meta, row):
 # Convert composer rows into a scene mapping (the scene file format).
 def rows_to_scene(rows, loras_dir, base, notes, camera=None):
     children = []
+    # A "3d camera" row replaces every other camera-slot row (their tags and LoRAs).
+    cam3d = any(r.get("slot") == "camera" and r.get("use") == CAMERA_INPUT and not r.get("none") for r in rows)
     for i, row in enumerate(rows):
         slot = str(row.get("slot") or "")
         kind = SLOTS.get(slot, ("concept", None))[0]
         where = f"row {i + 1} ({slot})"
         if row.get("none"):
+            continue
+        if cam3d and slot == "camera" and row.get("use") != CAMERA_INPUT:
+            what = row.get("use") or row.get("lora") or row.get("tags") or "empty row"
+            notes.append(f"{where}: {what} replaced by {CAMERA_INPUT}")
             continue
         if slot == "detailer":
             delta = {k: row[k] for k in ("drop", "add", "override") if row.get(k)}

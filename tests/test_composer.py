@@ -109,6 +109,15 @@ def test_camera_input_row():
         assert "camera_json" in str(e), e
     else:
         raise AssertionError("3d camera row without input must fail")
+    # 3d camera replaces other camera rows: block tags and camera LoRAs are dropped.
+    with tempfile.TemporaryDirectory() as tmp:
+        make_loras(tmp, {"camera/fisheye.safetensors": {"weight": {"min": 0.7}, "trigger_sets": ["fisheye"]}})
+        mixed = rows + [{"slot": "camera", "lora": "camera/fisheye.safetensors"},
+                        {"slot": "camera", "use": "cameras/cowboy_shot"}]
+        r = compose(lib, tmp, "illustrious", mixed, "from above")
+        assert "fisheye" not in r["positive"] and "cowboy shot" not in r["positive"], r["positive"]
+        assert "from above" in r["positive"] and r["loras"] == [], r
+        assert sum("replaced by 3d camera" in n for n in r["notes"]) == 2, r["notes"]
     block = [{"slot": "camera", "use": "cameras/cowboy_shot"}]
     r = compose(lib, "/nonexistent", "illustrious", block, "from above")
     assert "from above" not in r["positive"] and "cowboy shot" in r["positive"], r["positive"]

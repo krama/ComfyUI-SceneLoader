@@ -469,6 +469,11 @@ async function render(node) {
             render(node);
         };
         line.append(del);
+        if (row.slot === "camera" && row.use !== CAMERA_INPUT && !row.none
+            && rows.some((r) => r.slot === "camera" && r.use === CAMERA_INPUT && !r.none)) {
+            line.style.opacity = "0.4"; // same rule as composer.rows_to_scene: 3d camera replaces this row
+            line.title = "replaced by 3d camera (tags and LoRAs are not used)";
+        }
         box.append(line);
     });
 
