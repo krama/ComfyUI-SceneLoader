@@ -7,7 +7,7 @@ import torch
 from nodes import SaveImage
 
 from .sceneloader.prompt_log import build_log
-from .sceneloader.composer import block_loras, compose, lora_info, sidecar, slot_options
+from .sceneloader.composer import CAMERA_INPUT, block_loras, compose, lora_info, sidecar, slot_options
 from .sceneloader.assembler import (Library, SceneError, assemble, camera_tags_from_json, report,
                                     scene_base, to_lora_stack, KNOWN_BASES)
 
@@ -221,6 +221,11 @@ try:
         blocks, block_text = {}, {}
         for opt in slots.values():
             for ref in opt["blocks"]:
+                if ref == CAMERA_INPUT:
+                    blocks[ref] = []
+                    block_text[ref] = ("Camera tags from the camera_json / camera_prompt inputs\n"
+                                       "(Advanced Camera Control Prompt Generator).")
+                    continue
                 try:
                     with open(lib.path("blocks", ref), encoding="utf-8") as fh:
                         block_text[ref] = fh.read()

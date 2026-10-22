@@ -31,6 +31,8 @@ SLOTS = {
 STACK_ONLY = {"detail", "slider"}
 LORA_EXT = (".safetensors", ".ckpt", ".pt")
 SIDECAR = ".sceneloader.json"
+# Camera slot value that takes tags from the camera_json/camera_prompt inputs (3D camera).
+CAMERA_INPUT = "3d camera"
 
 
 # Return LoRA files (relative to loras/<base>, "/" separated) grouped by top folder.
@@ -60,6 +62,8 @@ def slot_options(lib, loras_dir, base):
                                 if f.endswith((".yaml", ".yml")))
         if slot == "quality":
             blocks = [b for b in blocks if b.split("/")[1] in (base, "default")]
+        if slot == "camera":
+            blocks = [CAMERA_INPUT] + blocks
         out[slot] = {"kind": kind, "blocks": blocks, "loras": loras.get(slot, [])}
     return out
 
@@ -132,7 +136,7 @@ def lora_defaults(meta, row):
 
 
 # Convert composer rows into a scene mapping (the scene file format).
-def rows_to_scene(rows, loras_dir, base, notes):
+def rows_to_scene(rows, loras_dir, base, notes, camera=None):
     children = []
     for i, row in enumerate(rows):
         slot = str(row.get("slot") or "")
@@ -143,6 +147,11 @@ def rows_to_scene(rows, loras_dir, base, notes):
         if slot == "detailer":
             children.append({"kind": "detailer", "name": "detailer",
                              **{k: row[k] for k in ("drop", "add", "override") if row.get(k)}})
+        elif row.get("use") == CAMERA_INPUT:
+            if camera is None:
+                raise SceneError(f"{where}: '{CAMERA_INPUT}' needs camera_json or camera_prompt connected")
+            children.append({"kind": kind, "name": CAMERA_INPUT, "tags": camera})
+            notes.append(f"{where}: tags from 3d camera input")
         elif row.get("use"):
             # "weights" overrides the strength of LoRAs inside the block (identity LoRAs stay fixed).
             loras = [{"file": f, "weight": float(w)} for f, w in (row.get("weights") or {}).items()]
@@ -162,8 +171,10 @@ def rows_to_scene(rows, loras_dir, base, notes):
     return {"kind": "scene", "name": "composer", "children": children}
 
 
-# Assemble composer rows; same result shape as assembler.assemble.
-def compose(lib, loras_dir, base, rows, camera_override=None):
+# Assemble composer rows; camera tags are used only by a "3d camera" row. Same result as assemble.
+def compose(lib, loras_dir, base, rows, camera=None):
     notes = []
-    scene = rows_to_scene(rows, loras_dir, base, notes)
-    return assemble_raw(lib, scene, "composer", camera_override, notes)
+    scene = rows_to_scene(rows, loras_dir, base, notes, camera)
+    if camera is not None and not any(r.get("use") == CAMERA_INPUT for r in rows):
+        notes.append(f"camera input connected but unused: set a camera row to '{CAMERA_INPUT}'")
+    return assemble_raw(lib, scene, "composer", None, notes)

@@ -96,8 +96,27 @@ def test_block_lora_weights():
     assert any("identity LoRA" in n for n in r["notes"]), r["notes"]
 
 
+def test_camera_input_row():
+    lib = Library(EXAMPLES)
+    rows = [{"slot": "camera", "use": "3d camera"}, {"slot": "quality", "use": "quality/default"},
+            {"slot": "background", "use": "backgrounds/forest_path"}]
+    pos = compose(lib, "/nonexistent", "illustrious", rows, "from above, full body")["positive"]
+    assert pos.index("forest") < pos.index("from above"), pos  # camera keeps its prompt position
+    try:
+        compose(lib, "/nonexistent", "illustrious", rows, None)
+    except SceneError as e:
+        assert "camera_json" in str(e), e
+    else:
+        raise AssertionError("3d camera row without input must fail")
+    block = [{"slot": "camera", "use": "cameras/cowboy_shot"}]
+    r = compose(lib, "/nonexistent", "illustrious", block, "from above")
+    assert "from above" not in r["positive"] and "cowboy shot" in r["positive"], r["positive"]
+    assert any("unused" in n for n in r["notes"]), r["notes"]
+    assert "3d camera" in slot_options(lib, "/nonexistent", "illustrious")["camera"]["blocks"]
+
+
 if __name__ == "__main__":
     for fn in (test_compose_order_weights_triggers, test_not_chosen_and_missing, test_slot_options,
-               test_block_lora_weights):
+               test_block_lora_weights, test_camera_input_row):
         fn()
         print(f"ok  {fn.__name__}")

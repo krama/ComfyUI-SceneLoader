@@ -3,6 +3,12 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const LORA_RE = /\.(safetensors|ckpt|pt)$/i;
+const CAMERA_INPUT = "3d camera"; // same value as composer.CAMERA_INPUT in Python
+
+// True when camera_json or camera_prompt input has a link.
+function cameraLinked(node) {
+    return !!node.inputs?.some((i) => (i.name === "camera_json" || i.name === "camera_prompt") && i.link != null);
+}
 const ROW_H = 28;
 const cache = {};
 
@@ -176,6 +182,16 @@ async function render(node) {
             showPopup(text, e);
         };
         line.append(info, item);
+        if (row.use === CAMERA_INPUT) {
+            // Show whether Advanced Camera Control is wired into the camera inputs.
+            const linked = cameraLinked(node);
+            item.style.outline = linked ? "" : "1px solid #e66";
+            line.append(el("span", {
+                textContent: linked ? "● linked" : "not linked",
+                title: "camera_json / camera_prompt inputs",
+                style: `font-size:11px;white-space:nowrap;color:${linked ? "#6c6" : "#e66"}`,
+            }));
+        }
         // Strength of LoRAs inside a library block; identity (character) LoRAs are fixed by the block.
         for (const bl of (row.use && opts.blocks?.[row.use]) || []) {
             const fixed = bl.type === "character";
@@ -291,6 +307,12 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             const r = onNodeCreated?.apply(this, arguments);
             setTimeout(() => setup(this), 0);
+            return r;
+        };
+        const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+        nodeType.prototype.onConnectionsChange = function () {
+            const r = onConnectionsChange?.apply(this, arguments);
+            if (this.__composer) render(this); // refresh "3d camera" linked status
             return r;
         };
         const onConfigure = nodeType.prototype.onConfigure;
