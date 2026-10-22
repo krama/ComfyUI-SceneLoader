@@ -1,12 +1,13 @@
 """Scene Composer: turn slot rows (library blocks and LoRAs) into a scene and assemble it.
 
-Rows are dicts: {"slot", "use"} for a block, {"slot", "lora", "weight"?, "trigger"?, "extras"?}
-for a LoRA, {"slot", "none": true} to skip, or a row with neither "use" nor "lora" (not chosen).
+Rows are dicts: {"slot", "use", "weights"?: {lora file: weight}} for a block,
+{"slot", "lora", "weight"?, "trigger"?, "extras"?} for a LoRA, {"slot", "none": true} to skip,
+or a row with neither "use" nor "lora" (not chosen).
 """
 import json
 import os
 
-from .assembler import SceneError, assemble_raw, join_tags
+from .assembler import SceneError, assemble_raw, join_tags, resolve
 
 # Slot -> (prompt kind, block folder under library/blocks or None). Order is the UI order.
 SLOTS = {
@@ -63,6 +64,17 @@ def slot_options(lib, loras_dir, base):
     return out
 
 
+# Return LoRAs a library block brings (including nested blocks): [{"file", "weight", "type"}].
+def block_loras(lib, ref):
+    block = resolve(lib, {"use": ref}, [], f"blocks/{ref}")
+    out, stack = [], [block]
+    while stack:
+        b = stack.pop(0)
+        out += [{"file": x["file"], "weight": x["weight"], "type": x["type"]} for x in b["loras"]]
+        stack += b["children"]
+    return out
+
+
 # Read <lora>.sceneloader.json; missing or broken sidecar gives {}.
 def sidecar(loras_dir, base, rel):
     path = os.path.join(loras_dir, base, os.path.splitext(rel)[0] + SIDECAR)
@@ -105,7 +117,9 @@ def rows_to_scene(rows, loras_dir, base, notes):
             children.append({"kind": "detailer", "name": "detailer",
                              **{k: row[k] for k in ("drop", "add", "override") if row.get(k)}})
         elif row.get("use"):
-            children.append({"use": row["use"], "kind": kind, "tags": row.get("tags", "")})
+            # "weights" overrides the strength of LoRAs inside the block (identity LoRAs stay fixed).
+            loras = [{"file": f, "weight": float(w)} for f, w in (row.get("weights") or {}).items()]
+            children.append({"use": row["use"], "kind": kind, "tags": row.get("tags", ""), "loras": loras})
         elif row.get("lora"):
             rel = str(row["lora"]).replace("\\", "/")
             if not os.path.isfile(os.path.join(loras_dir, base, rel)):

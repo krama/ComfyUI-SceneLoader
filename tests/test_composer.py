@@ -6,7 +6,7 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from sceneloader.assembler import Library, SceneError  # noqa: E402
-from sceneloader.composer import compose, slot_options  # noqa: E402
+from sceneloader.composer import block_loras, compose, slot_options  # noqa: E402
 
 EXAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples")
 
@@ -82,7 +82,22 @@ def test_slot_options():
         assert "characters/example_girl" in opts["character"]["blocks"], opts["character"]
 
 
+def test_block_lora_weights():
+    lib = Library(EXAMPLES)
+    found = {x["file"]: (x["weight"], x["type"]) for x in block_loras(lib, "characters/example_girl")}
+    assert found == {"character/example_girl.safetensors": (0.9, "character"),
+                     "slider/example_height_slider.safetensors": (1.0, "slider")}, found
+    weights = {"slider/example_height_slider.safetensors": 0.3, "character/example_girl.safetensors": 0.5}
+    r = compose(lib, "/nonexistent", "illustrious",
+                [{"slot": "character", "use": "characters/example_girl", "weights": weights}])
+    w = {x["file"]: x["weight"] for x in r["loras"]}
+    assert w["slider/example_height_slider.safetensors"] == 0.3, w  # nested block LoRA overridden
+    assert w["character/example_girl.safetensors"] == 0.9, w  # identity weight stays fixed
+    assert any("identity LoRA" in n for n in r["notes"]), r["notes"]
+
+
 if __name__ == "__main__":
-    for fn in (test_compose_order_weights_triggers, test_not_chosen_and_missing, test_slot_options):
+    for fn in (test_compose_order_weights_triggers, test_not_chosen_and_missing, test_slot_options,
+               test_block_lora_weights):
         fn()
         print(f"ok  {fn.__name__}")

@@ -1,4 +1,5 @@
 """Scene Loader - builds a scene from structured blocks (character, background, light) with LoRAs."""
+import json
 import os
 
 import folder_paths
@@ -6,6 +7,7 @@ import torch
 from nodes import SaveImage
 
 from .sceneloader.prompt_log import build_log
+from .sceneloader.composer import block_loras, compose, sidecar, slot_options
 from .sceneloader.assembler import (Library, SceneError, assemble, camera_tags_from_json, report,
                                     scene_base, to_lora_stack, KNOWN_BASES)
 
@@ -79,6 +81,56 @@ class SceneLoader:
                 to_lora_stack(result["loras_detailer"], base), info)
 
 
+class SceneComposer:
+    """Builds a scene from slot rows (library blocks and LoRAs) edited in the node UI."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "base": (list(KNOWN_BASES), {"tooltip": "LoRA base folder under loras/"}),
+            "composition": ("STRING", {"multiline": True, "default": "[]",
+                                       "tooltip": "Slot rows as JSON; edited by the composer UI"}),
+        }, "optional": SceneLoader.INPUT_TYPES()["optional"]}
+
+    RETURN_TYPES = SceneLoader.RETURN_TYPES
+    RETURN_NAMES = SceneLoader.RETURN_NAMES
+    FUNCTION = "compose"
+    CATEGORY = "SceneLoader"
+
+    # Re-run when any library file changes on disk.
+    @classmethod
+    def IS_CHANGED(cls, base, composition, camera_json=None, camera_prompt=None):
+        return Library(library_root()).fingerprint()
+
+    # Assemble the rows into prompts and SimplePowerLora stacks.
+    def compose(self, base, composition, camera_json=None, camera_prompt=None):
+        lib = Library(library_root())
+        try:
+            rows = json.loads(composition or "[]")
+            if not isinstance(rows, list):
+                raise SceneError("composition must be a JSON list of rows")
+            camera = SceneLoader.camera_override(base, camera_json, camera_prompt)
+            result = compose(lib, lora_root(base), base, rows, camera)
+        except (SceneError, ValueError) as e:
+            print(f"[SceneComposer] {base}: {e}")
+            raise SceneError(str(e))
+        resolver = lambda name: folder_paths.get_full_path("loras", name)  # noqa: E731
+        info = report(result, base, resolver)
+        print(f"[SceneComposer] {base}: {len(rows)} rows, {len(result['loras'])} loras, "
+              f"{len(result['loras_detailer'])} detailer loras, {info.count('  MISSING')} missing")
+        return (result["positive"], result["negative"], to_lora_stack(result["loras"], base),
+                to_lora_stack(result["loras_detailer"], base), info)
+
+
+# Return the configured loras folder that holds the <base>/ subfolder (first one as fallback).
+def lora_root(base):
+    paths = folder_paths.get_folder_paths("loras")
+    hit = next((p for p in paths if os.path.isdir(os.path.join(p, base))), None)
+    if hit is None:
+        print(f"[SceneComposer] no loras folder contains '{base}/': {paths}")
+    return hit or paths[0]
+
+
 class SceneSave(SaveImage):
     """SaveImage that also returns a generation log (final prompt and settings) for Scene Log."""
 
@@ -150,11 +202,38 @@ try:
     @PromptServer.instance.routes.get("/sceneloader/scenes")
     async def sceneloader_scenes(request):
         return web.json_response({"scenes": Library(library_root()).scene_bases()})
+
+    # Expose composer slots for a base, with recommended weight and trigger sets per LoRA.
+    @PromptServer.instance.routes.get("/sceneloader/composer/options")
+    async def sceneloader_composer_options(request):
+        base = request.query.get("base", "")
+        if base not in KNOWN_BASES:
+            return web.json_response({"error": f"unknown base {base!r}"}, status=400)
+        root = lora_root(base)
+        slots = slot_options(Library(library_root()), root, base)
+        meta = {}
+        for opt in slots.values():
+            for rel in opt["loras"]:
+                m = sidecar(root, base, rel)
+                meta[rel] = {"w": (m.get("weight") or {}).get("min", 1.0), "t": m.get("trigger_sets") or [],
+                             "x": bool(m.get("extra_positive") or m.get("extra_negative"))}
+        lib = Library(library_root())
+        blocks = {}
+        for opt in slots.values():
+            for ref in opt["blocks"]:
+                try:
+                    blocks[ref] = block_loras(lib, ref)
+                except (SceneError, OSError, ValueError) as e:  # broken block: show it without LoRAs
+                    print(f"[SceneComposer] block {ref}: {e}")
+                    blocks[ref] = []
+        return web.json_response({"slots": slots, "loras": meta, "blocks": blocks})
 except Exception as e:  # server not available (tests, CLI)
     print(f"[SceneLoader] scene filter route not registered: {e}")
 
-NODE_CLASS_MAPPINGS = {"SceneLoader": SceneLoader, "SceneSave": SceneSave, "SceneLog": SceneLog}
+NODE_CLASS_MAPPINGS = {"SceneLoader": SceneLoader, "SceneComposer": SceneComposer,
+                       "SceneSave": SceneSave, "SceneLog": SceneLog}
 WEB_DIRECTORY = "./web"
-NODE_DISPLAY_NAME_MAPPINGS = {"SceneLoader": "Scene Loader", "SceneSave": "Scene Save", "SceneLog": "Scene Log"}
+NODE_DISPLAY_NAME_MAPPINGS = {"SceneLoader": "Scene Loader", "SceneComposer": "Scene Composer",
+                              "SceneSave": "Scene Save", "SceneLog": "Scene Log"}
 
 print(f"[SceneLoader] loaded - {len(NODE_CLASS_MAPPINGS)} nodes, library: {library_root()}")
