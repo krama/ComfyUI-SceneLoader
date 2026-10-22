@@ -104,16 +104,22 @@ class SceneComposer:
 
     # Re-run when any library file changes on disk.
     @classmethod
-    def IS_CHANGED(cls, base, composition, camera=None):
+    def IS_CHANGED(cls, base, composition, camera=None, **legacy):
         return Library(library_root()).fingerprint()
 
     # Assemble the rows into prompts and SimplePowerLora stacks.
-    def compose(self, base, composition, camera=None):
+    # Graphs saved before the single camera input still send camera_json / camera_prompt (legacy).
+    def compose(self, base, composition, camera=None, camera_json=None, camera_prompt=None, **legacy):
         lib = Library(library_root())
         try:
             rows = json.loads(composition or "[]")
             if not isinstance(rows, list):
                 raise SceneError("composition must be a JSON list of rows")
+            if not camera and (camera_json or camera_prompt):
+                # Same choice the old inputs had: prompt text for anima, camera_json for illustrious.
+                camera = camera_prompt if base == "anima" and camera_prompt else (camera_json or camera_prompt)
+                print("[SceneComposer] legacy camera_json/camera_prompt input used; "
+                      "reconnect it to the 'camera' input (right-click node -> Fix node)")
             cam = camera_input_tags(base, camera)
             if cam is not None:
                 print(f"[SceneComposer] camera input -> {cam}")

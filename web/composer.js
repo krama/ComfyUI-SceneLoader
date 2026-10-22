@@ -3,9 +3,12 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const LORA_RE = /\.(safetensors|ckpt|pt)$/i;
-// True when the "camera" input has a link; it then replaces the camera slot (composer.rows_to_scene).
+// Camera input names; camera_json/camera_prompt are legacy sockets in graphs saved before "camera".
+const CAMERA_INPUTS = ["camera", "camera_json", "camera_prompt"];
+
+// True when a camera input has a link; it then replaces the camera slot (composer.rows_to_scene).
 function cameraLinked(node) {
-    return !!node.inputs?.some((i) => i.name === "camera" && i.link != null);
+    return !!node.inputs?.some((i) => CAMERA_INPUTS.includes(i.name) && i.link != null);
 }
 const ROW_H = 28;
 const cache = {};
