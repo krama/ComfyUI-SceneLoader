@@ -144,6 +144,37 @@ def lora_root(base):
     return hit or paths[0]
 
 
+class SMPLXRiggedGLB:
+    """Saves an SMPL-X pose (SMPLx-Estimator output) as a skinned GLB for Blender / Cascadeur."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "smplx": ("SMPLX", {"tooltip": "SMPL-X pose from SMPLx-Estimator (e.g. Body: NLF)"}),
+            "filename_prefix": ("STRING", {"default": "sceneloader/pose/rigged"}),
+        }}
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("file_path",)
+    FUNCTION = "export"
+    OUTPUT_NODE = True
+    CATEGORY = "SceneLoader"
+
+    # Write <output>/<prefix>_NNNNN_.glb with 55 joints, skin weights and the pose as joint rotations.
+    def export(self, smplx, filename_prefix="sceneloader/pose/rigged"):
+        from .sceneloader.smplx_rig import export_rigged_glb
+        out_dir = folder_paths.get_output_directory()
+        full_dir, name, counter, subfolder, _ = folder_paths.get_save_image_path(filename_prefix, out_dir)
+        path = os.path.join(full_dir, f"{name}_{counter:05}_.glb")
+        try:
+            rig = export_rigged_glb(smplx, path)
+        except (OSError, KeyError, ValueError) as e:
+            print(f"[SceneLoader] rigged GLB export failed: {e}")
+            raise
+        print(f"[SceneLoader] rigged GLB: {path} ({len(rig['verts'])} verts, {len(rig['names'])} joints)")
+        return {"ui": {"text": [path]}, "result": (path,)}
+
+
 class SceneSave(SaveImage):
     """SaveImage that also returns a generation log (final prompt and settings) for Scene Log."""
 
@@ -282,9 +313,10 @@ except Exception as e:  # server not available (tests, CLI)
     print(f"[SceneLoader] scene filter route not registered: {e}")
 
 NODE_CLASS_MAPPINGS = {"SceneLoader": SceneLoader, "SceneComposer": SceneComposer,
-                       "SceneSave": SceneSave, "SceneLog": SceneLog}
+                       "SceneSave": SceneSave, "SceneLog": SceneLog, "SMPLXRiggedGLB": SMPLXRiggedGLB}
 WEB_DIRECTORY = "./web"
 NODE_DISPLAY_NAME_MAPPINGS = {"SceneLoader": "Scene Loader", "SceneComposer": "Scene Composer",
-                              "SceneSave": "Scene Save", "SceneLog": "Scene Log"}
+                              "SceneSave": "Scene Save", "SceneLog": "Scene Log",
+                              "SMPLXRiggedGLB": "SMPL-X -> Rigged GLB"}
 
 print(f"[SceneLoader] loaded - {len(NODE_CLASS_MAPPINGS)} nodes, library: {library_root()}")
