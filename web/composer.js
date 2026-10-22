@@ -112,6 +112,83 @@ function showPopup(text, e) {
     document.addEventListener("keydown", onEsc, true);
 }
 
+let picker = null; // {list, input, items, active}
+
+// Close the dropdown list if it is open.
+function closePicker() {
+    picker?.list.remove();
+    picker = null;
+}
+
+// Scrollable search list under an input: substring filter, arrows/Enter/Esc, click to pick.
+// Picking sets input.value and fires "change"; free text still works (Enter without a highlight).
+function attachPicker(input, values) {
+    const MAX = 1000; // ponytail: plain DOM list; virtualize if a slot grows past a few thousand items
+    const show = () => {
+        const q = input.value.trim().toLowerCase();
+        // Full list right after focus on a filled field; filter once the user types.
+        const items = (input.dataset.typed ? values.filter((v) => v.toLowerCase().includes(q)) : values).slice(0, MAX);
+        closePicker();
+        if (!items.length) return;
+        const r = input.getBoundingClientRect();
+        const list = el("div", {
+            id: "scene-composer-picker",
+            style: `position:fixed;z-index:10001;left:${r.left}px;top:${r.bottom + 2}px;`
+                + `min-width:${r.width}px;max-width:min(640px,90vw);max-height:min(320px,50vh);overflow:auto;`
+                + "background:#1e1e1e;color:#ddd;border:1px solid #567;border-radius:4px;font:12px sans-serif;"
+                + "box-shadow:0 4px 16px rgba(0,0,0,.5)",
+        });
+        list.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true }); // no canvas zoom
+        items.forEach((v, k) => {
+            const opt = el("div", { textContent: v, style: "padding:3px 8px;white-space:nowrap;cursor:pointer" });
+            opt.onpointerdown = (e) => {
+                e.preventDefault(); // keep focus in the input until the value is set
+                pick(k);
+            };
+            opt.onmouseenter = () => highlight(k);
+            list.append(opt);
+        });
+        document.body.append(list);
+        picker = { list, input, items, active: -1 };
+        const cur = items.indexOf(input.value);
+        if (cur >= 0) highlight(cur);
+    };
+    const highlight = (k) => {
+        if (!picker) return;
+        [...picker.list.children].forEach((c, j) => (c.style.background = j === k ? "#345" : ""));
+        picker.active = k;
+        picker.list.children[k]?.scrollIntoView({ block: "nearest" });
+    };
+    const pick = (k) => {
+        const v = picker?.items[k];
+        closePicker();
+        if (v === undefined) return;
+        input.value = v;
+        delete input.dataset.typed;
+        input.dispatchEvent(new Event("change"));
+    };
+    input.addEventListener("focus", show);
+    input.addEventListener("input", () => {
+        input.dataset.typed = "1";
+        show();
+    });
+    input.addEventListener("blur", () => setTimeout(() => picker?.input === input && closePicker(), 150));
+    input.addEventListener("keydown", (e) => {
+        if (!picker || picker.input !== input) {
+            if (e.key === "ArrowDown") show();
+            return;
+        }
+        const n = picker.items.length;
+        if (e.key === "ArrowDown") highlight((picker.active + 1) % n);
+        else if (e.key === "ArrowUp") highlight((picker.active - 1 + n) % n);
+        else if (e.key === "Enter" && picker.active >= 0) pick(picker.active);
+        else if (e.key === "Escape") closePicker();
+        else return;
+        e.preventDefault();
+        e.stopPropagation(); // keep ComfyUI canvas shortcuts away from the list keys
+    });
+}
+
 // "i" button: hover shows tip; click opens a popup (full LoRA description loaded when lora is set).
 function infoButton(tip, lora, base) {
     const info = el("span", {
@@ -262,14 +339,10 @@ function detailerSection(node, rows, opts, save) {
     wrap.append(chips);
 
     const allLoras = Object.keys(opts.loras).sort();
-    const listId = `sc-${node.id}-all-loras`;
-    const list = el("datalist", { id: listId });
-    for (const v of allLoras) list.append(el("option", { value: v }));
-    wrap.append(list);
     (det?.add || []).forEach((a, k) => {
         const file = el("input", { value: a.file || "", placeholder: "detailer LoRA - type to search",
             style: `flex:1;min-width:120px;${a.file && !opts.loras[a.file] ? "outline:1px solid #e66" : ""}` });
-        file.setAttribute("list", listId);
+        attachPicker(file, allLoras);
         file.onchange = () => {
             a.file = file.value.trim();
             if (a.weight === undefined && opts.loras[a.file]) a.weight = opts.loras[a.file].w;
@@ -360,13 +433,6 @@ async function render(node) {
         node.setDirtyCanvas?.(true, true);
     };
 
-    for (const slot of order) {
-        const o = opts.slots[slot];
-        const list = el("datalist", { id: `sc-${node.id}-${slot}` });
-        for (const v of ["none", ...o.blocks, ...o.loras]) list.append(el("option", { value: v }));
-        box.append(list);
-    }
-
     rows.forEach((row, i) => {
         if (row.slot === "detailer") return; // edited in the detailer section (later step)
         const o = opts.slots[row.slot];
@@ -379,7 +445,7 @@ async function render(node) {
             style: `flex:1;min-width:120px;${row.tags && !row.use ? "font-style:italic;" : ""}`
                 + (missing ? "outline:1px solid #e66" : ""),
         });
-        item.setAttribute("list", `sc-${node.id}-${row.slot}`);
+        attachPicker(item, o ? ["none", ...o.blocks, ...o.loras] : ["none"]);
         item.onchange = () => {
             rows[i] = makeRow(row.slot, item.value, row, o);
             save();
