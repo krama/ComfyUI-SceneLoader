@@ -264,8 +264,10 @@ class PoseCamera:
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("pose_map", "positive", "camera_tags")
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING", "IMAGE")
+    RETURN_NAMES = ("pose_map", "positive", "camera_tags", "depth_map")
+    OUTPUT_TOOLTIPS = ("OpenPose map for ControlNet OpenPose", "Prompt with the camera tags", "Camera tags",
+                       "Depth of the body from the same camera (near = bright) for a depth ControlNet")
     FUNCTION = "shoot"
     CATEGORY = "SceneLoader"
 
@@ -278,14 +280,15 @@ class PoseCamera:
     # A pose this node has not shown yet stops the run (outputs blocked) so the camera can be set first.
     def shoot(self, smplx, width, height, framing, yaw, elevation, fov, zoom, shift_x, shift_y,
               stop_on_new_pose=True, prompt="", unique_id=None):
-        from .sceneloader.pose_camera import merge_camera_tags, pose_body, render_pose, view_payload
+        from .sceneloader.pose_camera import depth_map, merge_camera_tags, pose_body, render_pose, view_payload
         model = _smplx_model(smplx["model_path"], smplx.get("gender", "neutral"))
         body = pose_body(model, smplx)
         key = pose_key(smplx)
         new_pose = _POSE_SEEN.get(unique_id) != key
         _POSE_SEEN[unique_id] = key
+        cam = {}
         img, tags, points = render_pose(model, smplx, width, height, framing, yaw, elevation, fov, zoom,
-                                        shift_x, shift_y, body=body)
+                                        shift_x, shift_y, body=body, cam=cam)
         text = ", ".join(tags)
         seen = sum(p is not None for p in points)
         print(f"[SceneLoader] Pose Camera {width}x{height}: {text}; {seen}/18 points in frame "
@@ -296,8 +299,10 @@ class PoseCamera:
             from comfy_execution.graph_utils import ExecutionBlocker
             print("[SceneLoader] Pose Camera: new pose, run stopped here; set the camera and Run again to render")
             ui["camera_status"] = ["New pose: set the camera, then Run again to render."]
-            return {"ui": ui, "result": (ExecutionBlocker(None),) * 3}
-        result = (torch.from_numpy(img.astype("float32") / 255.0)[None], merge_camera_tags(prompt or "", tags), text)
+            return {"ui": ui, "result": (ExecutionBlocker(None),) * 4}
+        depth = depth_map(model, smplx, cam, width, height)
+        to_image = lambda a: torch.from_numpy(a.astype("float32") / 255.0)[None]  # noqa: E731
+        result = (to_image(img), merge_camera_tags(prompt or "", tags), text, to_image(depth))
         return {"ui": ui, "result": result}
 
 

@@ -67,6 +67,15 @@ def check(models_dir):
     _, tags, pts = pc.render_pose(model, A_POSE, w, h, zoom=1.3, shift_y=-0.15)
     assert pts[9] and pts[10] is None and tags[:2] == ["cowboy shot", "feet out of frame"], (tags, pts)
     print("ok  render_pose: fit, sides, back view, tags, framing, shift, zoom")
+    # Depth map from the same camera: every visible joint lands on the body, background stays black.
+    for kw in (dict(), dict(yaw=120, elevation=35, fov=70), dict(zoom=1.6, shift_y=-0.3)):
+        cam = {}
+        pts = pc.render_pose(model, A_POSE, w, h, cam=cam, **kw)[2]
+        d = pc.depth_map(model, A_POSE, cam, w, h)
+        assert d.shape == (h, w, 3) and d[0, 0].max() == 0 and d.max() == 255, kw
+        on = [d[int(p[1]), int(p[0]), 0] > 0 for p in pts if p is not None]
+        assert on and all(on), (kw, on)
+    print("ok  depth_map: silhouette under the OpenPose joints")
     check_js(model)
 
 

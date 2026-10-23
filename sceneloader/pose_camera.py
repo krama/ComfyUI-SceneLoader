@@ -174,20 +174,62 @@ def draw_openpose(points, width, height):
 
 
 # SMPL-X pose + camera settings -> (OpenPose map uint8 (H, W, 3), tags list, points list).
-# body: pose_body() result, to reuse it for view_payload.
+# body: pose_body() result, to reuse it for view_payload; cam: dict that receives the solved camera
+# (eye, rot, focal, offset), for depth_map.
 def render_pose(model, params, width, height, framing="full body", yaw=0.0, elevation=0.0, fov=40.0,
-                zoom=1.0, shift_x=0.0, shift_y=0.0, body=None):
+                zoom=1.0, shift_x=0.0, shift_y=0.0, body=None, cam=None):
     if framing not in FRAMING:
         raise ValueError(f"unknown framing {framing!r}, expected one of {list(FRAMING)}")
     verts, masks, joints, named = body or pose_body(model, params)
     framed = verts[masks[framing]]
     eye, rot, focal, offset = solve_camera(framed, yaw, elevation, fov, zoom, shift_x, shift_y, width, height)
+    if cam is not None:
+        cam.update(eye=eye, rot=rot, focal=focal, offset=offset)
     px, depth = project(joints, eye, rot, focal, width, height)
     px = px + offset
     inside = (depth > 1e-3) & (px[:, 0] >= 0) & (px[:, 0] < width) & (px[:, 1] >= 0) & (px[:, 1] < height)
     vis = visible_face(joints, eye) & inside
     points = [tuple(px[i]) if vis[i] else None for i in range(18)]
     return draw_openpose(points, width, height), camera_tags(named, rot, elevation, inside), points
+
+
+# Depth map of the posed body (full mesh, z-buffer) for the camera solved by render_pose: uint8
+# (H, W, 3), near = bright, background black, like MiDaS maps for depth ControlNets.
+def depth_map(model, params, cam, width, height, near=255, far=40):
+    verts, _ = posed_body(model, params)
+    faces = np.asarray(model.faces, np.int64)
+    px, depth = project(verts, cam["eye"], cam["rot"], cam["focal"], width, height)
+    px = px + cam["offset"]
+    zbuf = np.full((height, width), np.inf)
+    tri, tz = px[faces], depth[faces]                       # (F, 3, 2), (F, 3)
+    keep = (tz > 1e-3).all(1)
+    lo, hi = np.floor(tri.min(1)).astype(int), np.ceil(tri.max(1)).astype(int)
+    keep &= (hi[:, 0] >= 0) & (lo[:, 0] < width) & (hi[:, 1] >= 0) & (lo[:, 1] < height)
+    for f in np.nonzero(keep)[0]:
+        (x0, y0), (x1, y1) = np.maximum(lo[f], 0), np.minimum(hi[f], [width - 1, height - 1])
+        if x1 < x0 or y1 < y0:
+            continue
+        (ax, ay), (bx, by), (cx, cy) = tri[f]
+        den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+        if abs(den) < 1e-9:
+            continue
+        xs, ys = np.meshgrid(np.arange(x0, x1 + 1) + 0.5, np.arange(y0, y1 + 1) + 0.5)
+        w0 = ((by - cy) * (xs - cx) + (cx - bx) * (ys - cy)) / den
+        w1 = ((cy - ay) * (xs - cx) + (ax - cx) * (ys - cy)) / den
+        w2 = 1.0 - w0 - w1
+        ins = (w0 >= 0) & (w1 >= 0) & (w2 >= 0)
+        if not ins.any():
+            continue
+        z = w0 * tz[f, 0] + w1 * tz[f, 1] + w2 * tz[f, 2]
+        region = zbuf[y0:y1 + 1, x0:x1 + 1]
+        np.copyto(region, np.minimum(region, np.where(ins, z, np.inf)))
+    hit = np.isfinite(zbuf)
+    out = np.zeros((height, width), np.uint8)
+    if hit.any():
+        z0, z1 = zbuf[hit].min(), zbuf[hit].max()
+        t = (zbuf[hit] - z0) / max(z1 - z0, 1e-6)
+        out[hit] = np.round(near + (far - near) * t).astype(np.uint8)
+    return np.repeat(out[:, :, None], 3, 2)
 
 
 # Shot and view tags the camera owns; the same tags already in the prompt are replaced.
