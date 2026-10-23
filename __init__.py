@@ -1,4 +1,5 @@
 """Scene Loader - builds a scene from structured blocks (character, background, light) with LoRAs."""
+import asyncio
 import json
 import os
 
@@ -8,7 +9,8 @@ from nodes import SaveImage
 
 from .sceneloader.prompt_log import build_log
 from .sceneloader.composer import (NAME_RE, block_loras, camera_input_tags, compose, load_preset, lora_info,
-                                   save_preset, sidecar, slot_options)
+                                   lora_preview, pose_thumb, save_preset, sidecar, slider_options, slider_stack,
+                                   slot_options)
 from .sceneloader.assembler import (Library, SceneError, assemble, camera_tags_from_json, report,
                                     scene_base, to_lora_stack, KNOWN_BASES)
 
@@ -145,6 +147,36 @@ class SceneComposer:
                 to_lora_stack(result["loras_detailer"], base), info, *pose_outputs(result.get("pose_image")),
                 pose_outputs(result.get("pose_skeleton"), "skeleton")[0],
                 bool(result.get("pose_image") or result.get("pose_skeleton")))
+
+
+class SceneSliders:
+    """Slider LoRAs (loras/<base>/slider) picked by preview, each with its own strength (may be negative)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "base": (list(KNOWN_BASES), {"tooltip": "LoRA base folder under loras/"}),
+            "sliders": ("STRING", {"default": "{}", "tooltip": "{slider file: strength} as JSON; edited by the UI"}),
+        }, "optional": {
+            "lora_stack": ("STRING", {"forceInput": True,
+                                      "tooltip": "Stack to extend, e.g. Scene Composer lora_stack"}),
+        }}
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("lora_stack", "info")
+    OUTPUT_TOOLTIPS = ("Input stack + chosen sliders (SimplePowerLora format)", "Chosen sliders and strengths")
+    FUNCTION = "apply"
+    CATEGORY = "SceneLoader"
+
+    # Append the chosen sliders to the stack.
+    def apply(self, base, sliders, lora_stack=""):
+        try:
+            stack, info = slider_stack(lora_root(base), base, json.loads(sliders or "{}"), lora_stack)
+        except (SceneError, ValueError) as e:
+            print(f"[SceneSliders] {base}: {e}")
+            raise SceneError(str(e))
+        print(f"[SceneSliders] {base}:\n{info}")
+        return stack, info
 
 
 # (pose_image, has_pose_image): without a sample the image output blocks its users silently, so the
@@ -508,18 +540,51 @@ try:
         if base not in KNOWN_BASES or not rel or os.path.isabs(rel) or ".." in rel.split("/"):
             return web.json_response({"error": "bad base or file"}, status=400)
         return web.json_response({"text": lora_info(sidecar(lora_root(base), base, rel), None)})
+
+    # Pose thumbnail for the composer pose grid: ?ref=poses/...&size=160|512 -> JPEG.
+    @PromptServer.instance.routes.get("/sceneloader/composer/pose_thumb")
+    async def sceneloader_composer_pose_thumb(request):
+        ref = request.query.get("ref", "")
+        try:
+            size = int(request.query.get("size", "160"))
+            path = await asyncio.to_thread(pose_thumb, Library(library_root()), ref, size)
+        except (SceneError, OSError, ValueError) as e:
+            print(f"[SceneComposer] pose_thumb {ref}: {e}")
+            return web.json_response({"error": str(e)}, status=400)
+        if not path:
+            return web.json_response({"error": f"{ref}: no image or skeleton"}, status=404)
+        return web.FileResponse(path, headers={"Cache-Control": "max-age=86400"})
+
+    # Slider LoRAs of a base for the Scene Sliders node.
+    @PromptServer.instance.routes.get("/sceneloader/sliders")
+    async def sceneloader_sliders(request):
+        base = request.query.get("base", "")
+        if base not in KNOWN_BASES:
+            return web.json_response({"error": f"unknown base {base!r}"}, status=400)
+        return web.json_response({"sliders": slider_options(lora_root(base), base)})
+
+    # Preview image next to a LoRA file.
+    @PromptServer.instance.routes.get("/sceneloader/lora_preview")
+    async def sceneloader_lora_preview(request):
+        base, rel = request.query.get("base", ""), request.query.get("file", "").replace("\\", "/")
+        if base not in KNOWN_BASES or not rel or os.path.isabs(rel) or ".." in rel.split("/"):
+            return web.json_response({"error": "bad base or file"}, status=400)
+        path = lora_preview(lora_root(base), base, rel)
+        if not path:
+            return web.json_response({"error": f"{base}/{rel}: no preview"}, status=404)
+        return web.FileResponse(path, headers={"Cache-Control": "max-age=3600"})
 except Exception as e:  # server not available (tests, CLI)
     print(f"[SceneLoader] scene filter route not registered: {e}")
 
 NODE_CLASS_MAPPINGS = {"SceneLoader": SceneLoader, "SceneComposer": SceneComposer,
                        "SceneSave": SceneSave, "SceneLog": SceneLog, "SMPLXRiggedGLB": SMPLXRiggedGLB,
                        "SMPLXToOpenPose3D": SMPLXToOpenPose3D, "PoseCamera": PoseCamera,
-                       "PoseCameraCrop": PoseCameraCrop}
+                       "PoseCameraCrop": PoseCameraCrop, "SceneSliders": SceneSliders}
 WEB_DIRECTORY = "./web"
 NODE_DISPLAY_NAME_MAPPINGS = {"SceneLoader": "Scene Loader", "SceneComposer": "Scene Composer",
                               "SceneSave": "Scene Save", "SceneLog": "Scene Log",
                               "SMPLXRiggedGLB": "SMPL-X -> Rigged GLB",
                               "SMPLXToOpenPose3D": "SMPL-X -> OpenPose 3D", "PoseCamera": "Pose Camera",
-                              "PoseCameraCrop": "Pose Camera Crop"}
+                              "PoseCameraCrop": "Pose Camera Crop", "SceneSliders": "Scene Sliders"}
 
 print(f"[SceneLoader] loaded - {len(NODE_CLASS_MAPPINGS)} nodes, library: {library_root()}")

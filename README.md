@@ -10,6 +10,7 @@ around that body gives the ControlNet maps and the camera tags of the shot.
 | Node | What it does |
 | --- | --- |
 | Scene Composer | Builds the scene from slot rows (library blocks, LoRAs, tags) edited in the node |
+| Scene Sliders | Slider LoRAs (`loras/<base>/slider/`) picked by preview, each with its own strength |
 | Scene Loader | Same output from a scene file (`scenes/`); older, kept for existing graphs |
 | Pose Camera | Virtual camera around an SMPL-X pose: OpenPose and depth maps, camera tags, latent |
 | Pose Camera Crop | Cuts the frame out of an overscan render (see Pose Camera) |
@@ -25,7 +26,10 @@ Camera Control `camera_json`; replaces the camera rows).
 
 Rows: one per slot (quality, character, clothing, pose, nsfw, background, lighting, camera,
 detail, ...). A row uses a library block, a LoRA from `loras/<base>/<slot>/` with weight and
-trigger words, or plain tags. Presets save and load whole compositions. A detailer section sets
+trigger words, or plain tags. Search matches names and block tags (comma = all terms). The pose
+row has a ▦ thumbnail grid (sample image or skeleton, pack filter, "3D only" = poses with a sample
+image). Slider LoRAs are not a slot: they are set in Scene Sliders, old slider rows are ignored.
+Presets save and load whole compositions. A detailer section sets
 the LoRA stack for the detailer pass. Duplicate tags are removed; the ⓘ button shows the LoRA's
 Civitai description and usage tips (`tools/fetch_civitai_meta.py`).
 
@@ -43,6 +47,14 @@ A pose without a sample image or skeleton blocks `pose_image` / `pose_skeleton` 
 nodes using them are skipped instead of failing. With `pose_camera` on and a pose that has a
 sample image, camera rows (tags and LoRAs) and the `camera` input are left out: Pose Camera sets
 the camera.
+
+## Scene Sliders
+
+Lists every LoRA in `loras/<base>/slider/` with its preview (`<name>.preview.png` and the like,
+hover = large). Tick a slider and set its strength with the range (Civitai `minStrength` ..
+`maxStrength`, else -5..5) or the number field (any value, negative allowed); ↺ = recommended
+strength. `lora_stack` in (e.g. from Scene Composer) -> `lora_stack` out with the sliders
+appended -> Simple Power Lora; `info` lists the sliders.
 
 ## Pose Camera
 
@@ -108,6 +120,7 @@ Run with the ComfyUI venv python; none of them is loaded by ComfyUI.
 | `import_pose_inbox.py` | Pose images / zips / folders (Civitai downloads) -> pose blocks; photos and skeletons paired by name; `--dry-run`, `--skip` |
 | `import_pose_pack.py` | Pose card pack (`POSES.yaml` + images) -> pose blocks |
 | `tag_poses.py` | Pose tags for pose blocks from their images with a WD14 tagger (ONNX); keeps only pose / gesture / viewpoint tags |
+| `tag_skeletons.py` | Coarse pose tags for skeleton-only pose blocks from the skeleton geometry (standing / sitting / kneeling / lying, arms, view); replaced by `tag_poses.py` once the block has an image |
 | `skeleton_to_figure.py` | Skeleton-only pose blocks get a figure image via a running ComfyUI (ControlNet + NLF check); `--only`, `--limit` |
 | `fetch_civitai_meta.py` | Civitai metadata (weights, triggers, usage tips) next to each LoRA |
 | `classify_loras.py`, `relocate.py` | Propose / apply a LoRA folder layout (plan CSV) |

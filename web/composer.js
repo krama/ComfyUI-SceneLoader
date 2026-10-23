@@ -120,14 +120,33 @@ function closePicker() {
     picker = null;
 }
 
-// Scrollable search list under an input: substring filter, arrows/Enter/Esc, click to pick.
-// Picking sets input.value and fires "change"; free text still works (Enter without a highlight).
-function attachPicker(input, values) {
+// Return block tags from its yaml text ("tags:" line), "" when absent.
+function blockTags(opts, ref) {
+    const m = /^tags:[ \t]*(.*)$/m.exec(opts.block_text?.[ref] || "");
+    return m ? m[1].trim().replace(/^(['"])(.*)\1$/, "$2") : "";
+}
+
+// True when a pose block has a sample image (needed by Pose Camera's 3D body).
+function hasPoseImage(opts, ref) {
+    return /^image:[ \t]*\S/m.test(opts.block_text?.[ref] || "");
+}
+
+// True when every comma-separated term of the query occurs in the text.
+function matchesQuery(text, q) {
+    const t = text.toLowerCase();
+    return q.toLowerCase().split(",").map((s) => s.trim()).filter(Boolean).every((s) => t.includes(s));
+}
+
+// Scrollable search list under an input: filter by comma-separated terms, arrows/Enter/Esc, click to pick.
+// textOf(v) adds searchable text (block tags). Picking sets input.value and fires "change";
+// free text still works (Enter without a highlight).
+function attachPicker(input, values, textOf = () => "") {
     const MAX = 1000; // ponytail: plain DOM list; virtualize if a slot grows past a few thousand items
     const show = () => {
-        const q = input.value.trim().toLowerCase();
+        const q = input.value.trim();
         // Full list right after focus on a filled field; filter once the user types.
-        const items = (input.dataset.typed ? values.filter((v) => v.toLowerCase().includes(q)) : values).slice(0, MAX);
+        const items = (input.dataset.typed ? values.filter((v) => matchesQuery(`${v} ${textOf(v)}`, q)) : values)
+            .slice(0, MAX);
         closePicker();
         if (!items.length) return;
         const r = input.getBoundingClientRect();
@@ -187,6 +206,109 @@ function attachPicker(input, values) {
         e.preventDefault();
         e.stopPropagation(); // keep ComfyUI canvas shortcuts away from the list keys
     });
+}
+
+const gridState = { q: "", folder: "", only3d: false }; // pose grid filters, kept between opens
+const GRID_CHUNK = 120;
+
+// Return the thumbnail URL of a pose block (size 160 or 512).
+function thumbUrl(ref, size) {
+    return api.apiURL(`/sceneloader/composer/pose_thumb?ref=${encodeURIComponent(ref)}&size=${size}`);
+}
+
+// Full-screen pose grid: thumbnails (sample image, else skeleton), search by name and tags,
+// pack filter, "3D only" filter; hover shows a large preview, click picks the pose.
+function openPoseGrid(refs, opts, current, onPick) {
+    closePicker();
+    const folderOf = (r) => r.slice(0, r.lastIndexOf("/"));
+    const folders = [...new Set(refs.map(folderOf))].sort();
+    if (current && refs.includes(current) && !gridState.q) gridState.folder = folderOf(current);
+    const search = el("input", { value: gridState.q, placeholder: "search name and tags: sitting, from behind",
+        style: "flex:1;min-width:160px" });
+    const folder = el("select", { style: "max-width:320px" }, el("option", { value: "", textContent: "all packs" }));
+    for (const f of folders) folder.append(el("option", { value: f, textContent: f.replace(/^poses\//, "") }));
+    folder.value = folders.includes(gridState.folder) ? gridState.folder : "";
+    const only3d = el("input", { type: "checkbox", checked: gridState.only3d });
+    const count = el("span", { style: "opacity:.7;white-space:nowrap" });
+    const close = el("button", { textContent: "✕", title: "close (Esc)" });
+    const grid = el("div", { style: "flex:1;overflow:auto;display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start;padding:4px" });
+    const big = el("img", { style: "width:100%;max-height:60vh;object-fit:contain;background:#000" });
+    const info = el("div", { style: "white-space:pre-wrap;word-break:break-word;font-size:12px" });
+    const side = el("div", { style: "width:340px;flex:none;display:flex;flex-direction:column;gap:6px;overflow:auto" }, big, info);
+    const box = el("div", {
+        style: "position:fixed;z-index:10002;inset:5vh 4vw;display:flex;flex-direction:column;gap:6px;padding:8px;"
+            + "background:#1a1a1a;color:#ddd;border:1px solid #567;border-radius:6px;font:12px sans-serif;"
+            + "box-shadow:0 6px 24px rgba(0,0,0,.6)",
+    }, el("div", { style: "display:flex;gap:6px;align-items:center" }, search, folder,
+        el("label", { style: "display:flex;gap:3px;align-items:center;white-space:nowrap",
+            title: "only poses with a sample image: Pose Camera builds the 3D body from it" }, only3d, "3D only"),
+        count, close),
+    el("div", { style: "flex:1;display:flex;gap:8px;min-height:0" }, grid, side));
+
+    const preview = (ref) => {
+        big.src = thumbUrl(ref, 512);
+        const tags = blockTags(opts, ref);
+        info.textContent = `${ref}\n${hasPoseImage(opts, ref) ? "3D: sample image" : "skeleton only (no 3D camera)"}`
+            + `\n\n${tags || "(no tags)"}`;
+    };
+    let list = [], shown = 0;
+    const more = () => {
+        for (const ref of list.slice(shown, shown + GRID_CHUNK)) {
+            const img = hasPoseImage(opts, ref);
+            const card = el("div", {
+                title: blockTags(opts, ref),
+                style: "width:132px;cursor:pointer;border-radius:4px;padding:2px;"
+                    + `border:2px solid ${ref === current ? "#6c6" : "transparent"};background:#222`,
+            }, el("img", { src: thumbUrl(ref, 160), loading: "lazy",
+                style: "width:128px;height:128px;object-fit:contain;background:#000;display:block" }),
+            el("div", { style: "display:flex;gap:3px;align-items:center;font-size:11px" },
+                el("span", { textContent: img ? "3D" : "skel",
+                    style: `padding:0 3px;border-radius:3px;background:${img ? "#385" : "#555"}` }),
+                el("span", { textContent: ref.split("/").pop(), style: "overflow:hidden;text-overflow:ellipsis;white-space:nowrap" })));
+            card.onmouseenter = () => preview(ref);
+            card.onclick = () => {
+                done();
+                onPick(ref);
+            };
+            grid.append(card);
+        }
+        shown = Math.min(list.length, shown + GRID_CHUNK);
+    };
+    const refresh = () => {
+        Object.assign(gridState, { q: search.value.trim(), folder: folder.value, only3d: only3d.checked });
+        list = refs.filter((r) => (!gridState.folder || folderOf(r) === gridState.folder)
+            && (!gridState.only3d || hasPoseImage(opts, r))
+            && (!gridState.q || matchesQuery(`${r} ${blockTags(opts, r)}`, gridState.q)));
+        count.textContent = `${list.length} of ${refs.length}`;
+        grid.replaceChildren();
+        grid.scrollTop = 0;
+        shown = 0;
+        more();
+        if (list.length) preview(list.includes(current) ? current : list[0]);
+    };
+    grid.addEventListener("scroll", () => {
+        if (shown < list.length && grid.scrollTop + grid.clientHeight > grid.scrollHeight - 400) more();
+    });
+    const onKey = (e) => {
+        if (e.key === "Escape") done();
+        e.stopPropagation(); // keep ComfyUI canvas shortcuts away while the grid is open
+    };
+    const done = () => {
+        box.remove();
+        document.removeEventListener("keydown", onKey, true);
+    };
+    let timer = 0;
+    search.oninput = () => {
+        clearTimeout(timer);
+        timer = setTimeout(refresh, 200);
+    };
+    folder.onchange = only3d.onchange = refresh;
+    close.onclick = done;
+    box.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true }); // no canvas zoom
+    document.addEventListener("keydown", onKey, true);
+    document.body.append(box);
+    refresh();
+    search.focus();
 }
 
 // "i" button: hover shows tip; click opens a popup (full LoRA description loaded when lora is set).
@@ -425,7 +547,12 @@ async function render(node) {
     }
     box.append(bar);
     const order = Object.keys(opts.slots);
-    const rows = readRows(st.comp);
+    // Slider LoRAs moved to the Scene Sliders node: old slider rows are dropped from the composition.
+    const rows = readRows(st.comp).filter((r) => {
+        if (r.slot !== "slider") return true;
+        console.warn("[SceneComposer] slider row removed, set sliders in the Scene Sliders node:", r);
+        return false;
+    });
     // Keep rows in slot order; stable for rows of one slot.
     rows.sort((a, b) => order.indexOf(a.slot) - order.indexOf(b.slot));
     const save = () => {
@@ -445,7 +572,7 @@ async function render(node) {
             style: `flex:1;min-width:120px;${row.tags && !row.use ? "font-style:italic;" : ""}`
                 + (missing ? "outline:1px solid #e66" : ""),
         });
-        attachPicker(item, o ? ["none", ...o.blocks, ...o.loras] : ["none"]);
+        attachPicker(item, o ? ["none", ...o.blocks, ...o.loras] : ["none"], (v) => blockTags(opts, v));
         item.onchange = () => {
             rows[i] = makeRow(row.slot, item.value, row, o);
             save();
@@ -453,6 +580,18 @@ async function render(node) {
         };
         const line = el("div", { style: "display:flex;gap:4px;align-items:center;height:24px" },
             el("span", { textContent: row.slot, style: "width:80px;opacity:.7;overflow:hidden" }));
+        if (row.slot === "pose" && o?.blocks.length) {
+            const gridBtn = el("button", { textContent: "▦", title: "choose a pose from thumbnails" });
+            gridBtn.onclick = () => openPoseGrid(o.blocks, opts, row.use, (ref) => {
+                item.value = ref;
+                item.dispatchEvent(new Event("change"));
+            });
+            line.append(gridBtn);
+            if (row.use && !hasPoseImage(opts, row.use)) {
+                item.style.color = "#bbb";
+                item.title = "skeleton only: no sample image, Pose Camera (3D) is skipped for this pose";
+            }
+        }
         // Hover info: block file text (+ all LoRAs incl. nested) or LoRA metadata summary.
         let tip = "";
         if (row.use && opts.block_text?.[row.use] !== undefined) {

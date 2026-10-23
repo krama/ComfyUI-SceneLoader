@@ -6,8 +6,8 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from sceneloader.assembler import Library, SceneError, assemble, to_lora_stack  # noqa: E402
-from sceneloader.composer import (block_loras, camera_input_tags, compose, dedupe_tags, load_preset, save_preset,  # noqa: E402
-                                  slot_options)
+from sceneloader.composer import (block_loras, camera_input_tags, compose, dedupe_tags, load_preset, pose_thumb,  # noqa: E402
+                                  save_preset, slider_options, slider_stack, slot_options)
 
 EXAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples")
 
@@ -81,6 +81,36 @@ def test_slot_options():
         assert opts["misc folder"]["loras"] == ["misc folder/b.safetensors"]
         assert opts["other"]["loras"] == ["root.safetensors"]
         assert "characters/example_girl" in opts["character"]["blocks"], opts["character"]
+
+
+def test_sliders():
+    with tempfile.TemporaryDirectory() as tmp:
+        make_loras(tmp, {"slider/age.safetensors": {"weight": {"min": -1.0}, "usage_tips": {"minStrength": -6, "maxStrength": 6}},
+                         "slider/ears.safetensors": {"weight": {"min": 3.0}}, "style/a.safetensors": None})
+        open(os.path.join(tmp, "illustrious", "slider", "age.preview.png"), "wb").close()
+        assert "slider" not in slot_options(Library(EXAMPLES), tmp, "illustrious")  # not a composer slot
+        opts = {s["file"]: s for s in slider_options(tmp, "illustrious")}
+        assert list(opts) == ["slider/age.safetensors", "slider/ears.safetensors"], opts
+        a, e = opts["slider/age.safetensors"], opts["slider/ears.safetensors"]
+        assert (a["w"], a["min"], a["max"], a["preview"]) == (-1.0, -6.0, 6.0, True), a
+        assert (e["w"], e["min"], e["max"], e["preview"]) == (3.0, -5.0, 5.0, False), e  # default range
+        base = json.dumps([{"name": "illustrious/style/a.safetensors", "weight": 1.0, "enabled": True, "tags": ""}])
+        stack, info = slider_stack(tmp, "illustrious", {"slider/age.safetensors": -2.5}, base)
+        items = json.loads(stack)
+        assert [(x["name"], x["weight"]) for x in items] == [("illustrious/style/a.safetensors", 1.0),
+                                                             ("illustrious/slider/age.safetensors", -2.5)], items
+        assert "@-2.5" in info, info
+        for bad in ({"slider/gone.safetensors": 1}, {"style/a.safetensors": 1}, {"slider/../style/a.safetensors": 1}):
+            try:
+                slider_stack(tmp, "illustrious", bad)
+                raise AssertionError(f"accepted {bad}")
+            except SceneError:
+                pass
+        # Old composer slider rows are ignored with a note.
+        r = compose(Library(EXAMPLES), tmp, "illustrious", [{"slot": "slider", "lora": "slider/age.safetensors"},
+                                                            {"slot": "style", "lora": "style/a.safetensors"}])
+        assert [x["file"] for x in r["loras"]] == ["style/a.safetensors"], r["loras"]
+        assert any("Scene Sliders" in n for n in r["notes"]), r["notes"]
 
 
 def test_block_lora_weights():
@@ -217,6 +247,36 @@ def test_pose_pack_and_pose_image():
         assert r["pose_image"] is None and any("outside the library" in n for n in r["notes"]), r["notes"]
 
 
+def test_pose_thumb():
+    import shutil
+    from PIL import Image
+    with tempfile.TemporaryDirectory() as tmp:
+        lib_dir = os.path.join(tmp, "lib")
+        shutil.copytree(EXAMPLES, lib_dir)
+        d = os.path.join(lib_dir, "blocks", "poses", "pack")
+        os.makedirs(d)
+        Image.new("RGB", (800, 400), (200, 10, 10)).save(os.path.join(d, "a.png"))
+        Image.new("RGB", (300, 600), (0, 0, 0)).save(os.path.join(d, "b_skeleton.png"))
+        for name, body in (("a", "image: a.png\nskeleton: b_skeleton.png\n"), ("b", "skeleton: b_skeleton.png\n"),
+                           ("c", "tags: x\n")):
+            with open(os.path.join(d, name + ".yaml"), "w") as fh:
+                fh.write(f"name: {name}\nkind: pose\n{body}")
+        lib = Library(lib_dir)
+        a = pose_thumb(lib, "poses/pack/a", 160)
+        with Image.open(a) as im:  # sample image wins over skeleton, aspect kept
+            assert im.size == (160, 80) and im.getpixel((80, 40))[0] > 150, (im.size, im.getpixel((80, 40)))
+        with Image.open(pose_thumb(lib, "poses/pack/b", 512)) as im:  # skeleton only, fits the box
+            assert im.size == (256, 512), im.size
+        assert pose_thumb(lib, "poses/pack/a", 160) == a  # cached
+        assert pose_thumb(lib, "poses/pack/c", 160) is None
+        for bad in (("poses/../scenes/x", 160), ("characters/oc_mira", 160), ("poses/pack/a", 999)):
+            try:
+                pose_thumb(lib, *bad)
+                raise AssertionError(f"accepted {bad}")
+            except SceneError:
+                pass
+
+
 def test_pose_camera_skips_camera_rows():
     import shutil
     with tempfile.TemporaryDirectory() as tmp:
@@ -310,8 +370,8 @@ def test_pose_inbox_import():
 
 
 if __name__ == "__main__":
-    for fn in (test_compose_order_weights_triggers, test_not_chosen_and_missing, test_slot_options,
+    for fn in (test_compose_order_weights_triggers, test_not_chosen_and_missing, test_slot_options, test_sliders,
                test_block_lora_weights, test_camera_input, test_scene_preset_roundtrip, test_detailer_row, test_dedupe_tags,
-               test_pose_pack_and_pose_image, test_pose_inbox_import, test_pose_camera_skips_camera_rows):
+               test_pose_pack_and_pose_image, test_pose_thumb, test_pose_inbox_import, test_pose_camera_skips_camera_rows):
         fn()
         print(f"ok  {fn.__name__}")

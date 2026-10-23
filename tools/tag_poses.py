@@ -96,7 +96,10 @@ def find_blocks(library, only, force):
             with open(path, encoding="utf-8") as fh:
                 data = yaml.safe_load(fh) or {}
             ref = os.path.splitext(os.path.relpath(path, root))[0].replace(os.sep, "/")
-            if not isinstance(data, dict) or not data.get("image") or (data.get("tags") and not force):
+            if not isinstance(data, dict) or not data.get("image"):
+                continue
+            # Coarse tags from tag_skeletons.py are replaced once the block has a sample image.
+            if data.get("tags") and data.get("tags_source") != "skeleton" and not force:
                 continue
             if only and not any(fnmatch.fnmatch(ref, g) for g in only):
                 continue
@@ -133,6 +136,7 @@ def main(argv=None):
         done += 1
         if not a.dry_run:
             data["tags"] = ", ".join(tags)
+            data.pop("tags_source", None)
             with open(path, "w", encoding="utf-8") as fh:
                 yaml.safe_dump(data, fh, allow_unicode=True, sort_keys=False)
     log(("DRY RUN: " if a.dry_run else "") + f"{done} blocks tagged, {empty} without pose tags")

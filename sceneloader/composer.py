@@ -8,6 +8,7 @@ detailer delta, or a row with nothing chosen (an error at run time).
 import json
 import os
 import re
+import threading
 
 import yaml
 
@@ -30,8 +31,9 @@ SLOTS = {
     "camera": ("camera", "cameras"),
     "style": ("style", None),
     "detail": ("detail", None),
-    "slider": ("slider", None),
 }
+# LoRA folders that are not composer slots: slider LoRAs are set in the Scene Sliders node.
+NOT_SLOTS = {"slider"}
 # LoRA types that change the model only; their trigger words are not added to the prompt.
 STACK_ONLY = {"detail", "slider"}
 LORA_EXT = (".safetensors", ".ckpt", ".pt")
@@ -57,7 +59,7 @@ def lora_files(loras_dir, base):
 def slot_options(lib, loras_dir, base):
     loras = lora_files(loras_dir, base)
     out = {}
-    for slot in list(SLOTS) + sorted(set(loras) - set(SLOTS)):
+    for slot in list(SLOTS) + sorted(set(loras) - set(SLOTS) - NOT_SLOTS):
         kind, folder = SLOTS.get(slot, ("concept", None))
         blocks = []
         if folder:
@@ -122,6 +124,48 @@ def sidecar(loras_dir, base, rel):
         return {}
 
 
+PREVIEW_EXT = (".preview.png", ".preview.jpeg", ".preview.jpg", ".preview.webp", ".png", ".jpeg", ".jpg", ".webp")
+SLIDER_RANGE = (-5.0, 5.0)  # strength range when Civitai gives none
+
+
+# Return the preview image path next to a LoRA (<name>.preview.png and the like), None without one.
+def lora_preview(loras_dir, base, rel):
+    stem = os.path.join(loras_dir, base, os.path.splitext(rel)[0])
+    return next((stem + e for e in PREVIEW_EXT if os.path.isfile(stem + e)), None)
+
+
+# Slider LoRAs (loras/<base>/slider/**) for the Scene Sliders node: recommended strength "w" and
+# strength range from Civitai usage tips (widened to include "w"), preview present, short info.
+def slider_options(loras_dir, base):
+    out = []
+    for rel in lora_files(loras_dir, base).get("slider", []):
+        meta = sidecar(loras_dir, base, rel)
+        tips = meta.get("usage_tips") or {}
+        w = float((meta.get("weight") or {}).get("min", 1.0))
+        lo, hi = tips.get("minStrength"), tips.get("maxStrength")
+        lo, hi = (float(lo), float(hi)) if lo is not None and hi is not None and lo < hi else SLIDER_RANGE
+        out.append({"file": rel, "w": w, "min": min(lo, w), "max": max(hi, w),
+                    "preview": lora_preview(loras_dir, base, rel) is not None, "i": lora_info(meta)})
+    return out
+
+
+# Append chosen sliders {file: strength} (negative allowed) to a SimplePowerLora stack JSON;
+# returns (stack JSON, info text). Unknown or missing slider files raise SceneError.
+def slider_stack(loras_dir, base, chosen, stack=""):
+    items = json.loads(stack) if (stack or "").strip() else []
+    if not isinstance(items, list) or not isinstance(chosen, dict):
+        raise SceneError("lora_stack must be a JSON list and sliders a JSON object {file: strength}")
+    lines = []
+    for rel, w in chosen.items():
+        rel = str(rel).replace("\\", "/")
+        if (not rel.startswith("slider/") or ".." in rel.split("/")
+                or not os.path.isfile(os.path.join(loras_dir, base, rel))):
+            raise SceneError(f"slider LoRA not found: {base}/{rel}")
+        items.append({"name": f"{base}/{rel}", "weight": float(w), "enabled": True, "tags": ""})
+        lines.append(f"  [slider] {base}/{rel} @{float(w)}")
+    return json.dumps(items, ensure_ascii=False), "# sliders\n" + ("\n".join(lines) or "  (none)")
+
+
 # Return (weight, trigger tags, extra positive, extra negative) for a LoRA row.
 def lora_defaults(meta, row):
     weight = row.get("weight")
@@ -153,6 +197,9 @@ def rows_to_scene(rows, loras_dir, base, notes, camera=None):
         kind = SLOTS.get(slot, ("concept", None))[0]
         where = f"row {i + 1} ({slot})"
         if row.get("none"):
+            continue
+        if slot in NOT_SLOTS:
+            notes.append(f"{where}: {row.get('lora') or 'row'} ignored, sliders are set in the Scene Sliders node")
             continue
         if slot == "camera" and (camera is not None or row.get("use") == CAMERA_INPUT):
             what = row.get("use") or row.get("lora") or row.get("tags") or "empty row"
@@ -189,7 +236,7 @@ def rows_to_scene(rows, loras_dir, base, notes, camera=None):
 
 
 FOLDER_SLOT = {folder: slot for slot, (_, folder) in SLOTS.items() if folder}
-KIND_SLOT = {kind: slot for slot, (kind, _) in SLOTS.items()}
+KIND_SLOT = {kind: slot for slot, (kind, _) in SLOTS.items()} | {s: s for s in NOT_SLOTS}
 NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*$")
 
 
@@ -349,6 +396,34 @@ def pose_image(lib, rows, notes, key="image"):
             return full
         notes.append(f"pose_{key}: {row['use']} {key} not found: {image}")
     return None
+
+
+THUMB_SIZES = (160, 512)
+
+
+# Return a cached JPEG thumbnail of a pose block (sample image, else skeleton); None without either.
+# Cache: <library>/.cache/thumbs/<ref>.<size>.jpg, rebuilt when the source is newer.
+def pose_thumb(lib, ref, size):
+    if (size not in THUMB_SIZES or not ref.startswith("poses/") or "\\" in ref
+            or ".." in ref.split("/") or os.path.isabs(ref)):
+        raise SceneError(f"bad pose thumbnail request: {ref!r} @{size}")
+    notes = []
+    rows = [{"slot": "pose", "use": ref}]
+    src = pose_image(lib, rows, notes) or pose_image(lib, rows, notes, key="skeleton")
+    if not src:
+        return None
+    out = os.path.join(lib.root, ".cache", "thumbs", *ref.split("/")) + f".{size}.jpg"
+    if os.path.isfile(out) and os.path.getmtime(out) >= os.path.getmtime(src):
+        return out
+    from PIL import Image
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with Image.open(src) as im:
+        im = im.convert("RGB")
+        im.thumbnail((size, size))
+        tmp = f"{out}.{threading.get_ident()}.tmp"  # parallel requests for one thumb do not clash
+        im.save(tmp, "JPEG", quality=85)
+    os.replace(tmp, out)
+    return out
 
 
 # Turn the camera input into tags: Advanced Camera Control camera_json -> booru tags (illustrious),
