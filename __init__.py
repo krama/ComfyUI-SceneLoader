@@ -97,8 +97,11 @@ class SceneComposer:
                                              "Advanced Camera Control camera_json (booru tags for illustrious)"}),
         }}
 
-    RETURN_TYPES = SceneLoader.RETURN_TYPES + ("IMAGE",)
-    RETURN_NAMES = SceneLoader.RETURN_NAMES + ("pose_image",)
+    RETURN_TYPES = SceneLoader.RETURN_TYPES + ("IMAGE", "BOOLEAN")
+    RETURN_NAMES = SceneLoader.RETURN_NAMES + ("pose_image", "has_pose_image")
+    OUTPUT_TOOLTIPS = (None,) * len(SceneLoader.RETURN_TYPES) + (
+        "Sample image of the pose block; without one, nodes using it are skipped (not run)",
+        "True when the pose row has a sample image; drive If/Else switches around the pose branch")
     FUNCTION = "compose"
     CATEGORY = "SceneLoader"
 
@@ -132,7 +135,20 @@ class SceneComposer:
         print(f"[SceneComposer] {base}: {len(rows)} rows, {len(result['loras'])} loras, "
               f"{len(result['loras_detailer'])} detailer loras, {info.count('  MISSING')} missing")
         return (result["positive"], result["negative"], to_lora_stack(result["loras"], base),
-                to_lora_stack(result["loras_detailer"], base), info, load_pose_image(result.get("pose_image")))
+                to_lora_stack(result["loras_detailer"], base), info, *pose_outputs(result.get("pose_image")))
+
+
+# (pose_image, has_pose_image): without a sample the image output blocks its users silently, so the
+# pose branch (NLF, Pose Camera, previews) does not run; If/Else switches take the plain path.
+def pose_outputs(path):
+    if path:
+        return load_pose_image(path), True
+    try:
+        from comfy_execution.graph_utils import ExecutionBlocker
+    except ImportError:  # outside ComfyUI (tests)
+        return load_pose_image(None), False
+    print("[SceneComposer] pose row has no sample image: pose branch skipped")
+    return ExecutionBlocker(None), False
 
 
 # Load a pose sample image as a ComfyUI IMAGE (1, H, W, 3); no image gives a 64x64 black frame.
