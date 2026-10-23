@@ -5,8 +5,10 @@ The inbox takes images, .zip packs and folders. A single image becomes poses/civ
 with several photos becomes poses/civitai/<pack>/<path in pack>, one block per photo; a pack with
 one photo becomes poses/civitai/<pack>. Each block is <slug>.yaml ({name, kind: pose, tags, image})
 with the image next to it, so Scene Composer offers it in the pose slot and returns it as
-pose_image. Control maps (OpenPose skeletons on black, depth / canny in grayscale) and pack
-previews (preview, cover, grid, thumb, banner, showcase in the file name) are skipped and listed.
+pose_image. A source without photos but with OpenPose skeletons queues them in <dir>/_pending/;
+tools/skeleton_to_figure.py turns each into a figure image (ControlNet) and writes the block.
+Other control maps (lineart, depth / canny) and pack previews (preview, cover, grid, thumb,
+banner, showcase in the file name) are skipped and listed.
 Tags come from a <image>.txt next to the image, if any. Imported sources are moved to
 <inbox>/_imported/. Needs Pillow and numpy (run with the ComfyUI venv python).
 """
@@ -26,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from import_pose_pack import IMAGE_EXT, slug  # noqa: E402
 
 DONE_DIR = "_imported"
+PENDING_DIR = "_pending"  # skeletons waiting for tools/skeleton_to_figure.py
 OUT_SUBDIR = ("poses", "civitai")
 PREVIEW_RE = re.compile(r"preview|cover|grid|thumb|banner|showcase", re.I)
 
@@ -34,17 +37,38 @@ def log(msg):
     print(f"[import-pose-inbox] {msg}", flush=True)
 
 
-# Return why an image is not a pose photo (control map or pack preview), or None for a photo.
-def skip_reason(path):
+# Classify an image: ("photo", None), ("skeleton", None) or ("skip", reason).
+def classify(path):
     if PREVIEW_RE.search(os.path.splitext(os.path.basename(path))[0]):
-        return "pack preview / cover by file name"
+        return "skip", "pack preview / cover by file name"
     with Image.open(path) as im:
-        a = np.asarray(im.convert("RGB").resize((128, 128)), np.int16)
-    if (a.max(2) < 20).mean() > 0.85:
-        return "mostly black (OpenPose / lineart map)"
+        a = np.asarray(im.convert("RGB").resize((256, 256), Image.NEAREST), np.int16)
+    dark = a.max(2) < 20
+    if dark.mean() > 0.85:
+        lit = a[~dark]
+        # OpenPose limbs are saturated colors; lineart / scribble is white or gray on black.
+        if len(lit) and (lit.max(1) - lit.min(1)).mean() > 80:
+            return "skeleton", None
+        return "skip", "mostly black (lineart / scribble map)"
     if np.abs(np.diff(a, axis=2)).mean() < 2:
-        return "grayscale (depth / canny map)"
-    return None
+        return "skip", "grayscale (depth / canny map)"
+    return "photo", None
+
+
+# Queue an OpenPose skeleton for skeleton_to_figure.py: <out_dir>/_pending/<slug>.png (+ .txt tags).
+def queue_skeleton(out_dir, name, img, force):
+    s = slug(name)
+    pending = os.path.join(out_dir, PENDING_DIR)
+    if os.path.exists(os.path.join(out_dir, s + ".yaml")) and not force:
+        return None
+    os.makedirs(pending, exist_ok=True)
+    with Image.open(img) as im:
+        im.convert("RGB").save(os.path.join(pending, s + ".png"))
+    tags = tags_for(img)
+    if tags:
+        with open(os.path.join(pending, s + ".txt"), "w", encoding="utf-8") as fh:
+            fh.write(tags)
+    return s
 
 
 # Return the pack's content root: wrapper folders holding only one subfolder are skipped.
@@ -125,7 +149,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     base_dir = os.path.join(args.library, "blocks", *OUT_SUBDIR)
     ref_base = "/".join(OUT_SUBDIR)
-    written = kept = skipped = 0
+    written = kept = skipped = pending = 0
     with tempfile.TemporaryDirectory() as tmp:
         for entry in sorted(os.listdir(args.inbox)):
             src = os.path.join(args.inbox, entry)
@@ -143,30 +167,42 @@ def main(argv=None):
             else:
                 log(f"{entry}: not an image, zip or folder, left in the inbox")
                 continue
-            photos = []
+            photos, skeletons = [], []
             for rel, img in found:
-                why = skip_reason(img)
-                if why:
+                kind, why = classify(img)
+                if kind == "skip":
                     skipped += 1
                     log(f"{entry}: skip {rel}: {why}")
                 else:
-                    photos.append((rel, img))
-            if not photos:
-                log(f"{entry}: no pose photo found (NLF needs a person in the image)")
-            for rel, img in photos:
-                if pack is None or len(photos) == 1:
+                    (photos if kind == "photo" else skeletons).append((rel, img))
+            # Skeletons are used only when the source has no photos (else they duplicate the photos).
+            items, action = (photos, "photo") if photos else (skeletons, "skeleton")
+            if skeletons and photos:
+                skipped += len(skeletons)
+                log(f"{entry}: {len(skeletons)} OpenPose skeleton(s) skipped, photos are used")
+            if not items:
+                log(f"{entry}: no pose photo or OpenPose skeleton found")
+            for rel, img in items:
+                if pack is None or len(items) == 1:
                     out_dir, name, ref = base_dir, pack or rel, ref_base
                 else:
                     out_dir, name, ref = os.path.join(base_dir, pack), rel, f"{ref_base}/{pack}"
-                s = write_block(out_dir, name, img, args.force)
-                if s:
+                if action == "photo":
+                    s = write_block(out_dir, name, img, args.force)
+                else:
+                    s = queue_skeleton(out_dir, name, img, args.force)
+                if s and action == "photo":
                     written += 1
                     log(f"{entry}: {ref}/{s}")
+                elif s:
+                    pending += 1
+                    log(f"{entry}: {ref}/{s} queued: OpenPose skeleton, run skeleton_to_figure.py")
                 else:
                     kept += 1
                     log(f"{entry}: {ref}/{slug(name)} exists, kept (use --force)")
             move_done(args.inbox, src, stem)
-    log(f"{written} blocks written, {kept} kept, {skipped} images skipped -> {base_dir}")
+    log(f"{written} blocks written, {pending} skeletons queued, {kept} kept, {skipped} images skipped "
+        f"-> {base_dir}")
     return 0
 
 
