@@ -112,7 +112,31 @@ def test_pairing():
     got = ipi.pair(photos, skels)
     assert got == [("many/a", "A", None), ("many/b", "B", None), ("many/c", None, "C"), ("o3", None, "S3"),
                    ("r1", "P1", "S1"), ("r2", "P2", None), ("solo/shot", "PS", "SS")], got
+    # Role folders: poses/10 (skeleton) + previews/preview_10 (photo) are one pose.
+    assert k("pack/poses/10") == k("pack/previews/preview_10") == ("pack", "10"), k("pack/previews/preview_10")
     print("ok  test_pairing")
+
+
+def test_role_folders_and_exclude():
+    import yaml
+    with tempfile.TemporaryDirectory() as tmp:
+        inbox, lib = os.path.join(tmp, "inbox"), os.path.join(tmp, "lib")
+        root = os.path.join(inbox, "Thousands", "ControlnetPoses")
+        photo = Image.fromarray(np.random.default_rng(2).integers(0, 255, (64, 48, 3), np.uint8))
+        for sub in ("female/poses", "female/previews", "site"):
+            os.makedirs(os.path.join(root, sub))
+        for i in (1, 2):
+            skeleton_png(os.path.join(root, "female", "poses", f"{i}.png"))
+            photo.save(os.path.join(root, "female", "previews", f"preview_{i}.png"))
+        photo.save(os.path.join(root, "female", "previews", "preview_cover.png"))  # no skeleton: pack preview
+        photo.save(os.path.join(root, "site", "dog.png"))
+        assert ipi.main(["--inbox", inbox, "--library", lib, "--exclude", "site/*"]) == 0
+        d = os.path.join(lib, "blocks", "poses", "civitai", "thousands")
+        blocks = sorted(f for f in os.listdir(d) if f.endswith(".yaml"))
+        assert blocks == ["female_previews_preview_1.yaml", "female_previews_preview_2.yaml"], blocks
+        b = yaml.safe_load(open(os.path.join(d, blocks[0])))
+        assert b["image"].endswith(".png") and b["skeleton"].endswith("_skeleton.png"), b
+    print("ok  test_role_folders_and_exclude")
 
 
 def test_skeleton_to_figure():
@@ -154,4 +178,5 @@ def test_skeleton_to_figure():
 if __name__ == "__main__":
     test_classify_and_import()
     test_pairing()
+    test_role_folders_and_exclude()
     test_skeleton_to_figure()

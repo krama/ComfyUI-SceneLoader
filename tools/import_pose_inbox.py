@@ -36,17 +36,20 @@ OUT_SUBDIR = ("poses", "civitai")
 PREVIEW_RE = re.compile(r"preview|cover|grid|thumb|banner|showcase", re.I)
 # Words that name a file's role, not the pose; dropped when pairing photos with skeletons.
 ROLE_RE = re.compile(r"open_?pose|dw_?pose|keypoints?|skeleton|skel|depth|canny|line_?art|normal(map)?|"
-                     r"rendered|render|reference|ref|original|orig|photo|image|img|sample|source|src|pose")
+                     r"rendered|render|reference|ref|original|orig|photo|image|img|sample|source|src|preview|pose")
+# Folders that hold one role of every pose (poses/1.jpg + previews/1.jpg): not part of the pose identity.
+ROLE_DIRS = {"poses", "pose", "previews", "preview", "openpose", "openposes", "skeletons", "skeleton", "images",
+             "photos", "refs", "references", "samples", "depth", "canny", "lineart", "prompts"}
 
 
 def log(msg):
     print(f"[import-pose-inbox] {msg}", flush=True)
 
 
-# Classify an image: ("photo", None), ("skeleton", None) or ("skip", reason).
+# Classify an image: ("photo", None | "preview"), ("skeleton", None) or ("skip", reason). A photo named
+# preview / cover / ... is a pack preview unless it pairs with a skeleton (per-pose previews).
 def classify(path):
-    if PREVIEW_RE.search(os.path.splitext(os.path.basename(path))[0]):
-        return "skip", "pack preview / cover by file name"
+    preview = "preview" if PREVIEW_RE.search(os.path.splitext(os.path.basename(path))[0]) else None
     with Image.open(path) as im:
         a = np.asarray(im.convert("RGB").resize((256, 256), Image.NEAREST), np.int16)
     dark = a.max(2) < 20
@@ -58,12 +61,15 @@ def classify(path):
         return "skip", "mostly black (lineart / scribble map)"
     if np.abs(np.diff(a, axis=2)).mean() < 2:
         return "skip", "grayscale (depth / canny map)"
-    return "photo", None
+    return "photo", preview
 
 
 # Pairing key of a path inside a pack: (folder, stem without role words / o1-r1 style prefixes).
 def pose_key(rel):
     folder, stem = os.path.split(rel.lower())
+    head, last = os.path.split(folder)
+    if last in ROLE_DIRS:
+        folder = head
     key = re.sub(r"[^a-z0-9]+", "", ROLE_RE.sub("", stem))
     key = re.sub(r"^[a-z](?=\d+$)", "", key)  # o1 / r1 -> 1
     return folder, key or re.sub(r"[^a-z0-9]+", "", stem)
@@ -91,6 +97,17 @@ def pair(photos, skeletons):
     return sorted(out, key=lambda e: e[0])
 
 
+# Pair, then drop photos named preview / cover / ... that found no skeleton (pack previews).
+def pair_poses(photos, previews, skeletons):
+    keep = {p for _, p in photos}
+    out = []
+    for rel, photo, skeleton in pair(photos + previews, skeletons):
+        if photo and photo not in keep and not skeleton:
+            continue
+        out.append((rel, photo, skeleton))
+    return out
+
+
 # Return the pack's content root: wrapper folders holding only one subfolder are skipped.
 def pack_root(folder):
     while True:
@@ -101,15 +118,19 @@ def pack_root(folder):
             return folder
 
 
-# Return [(path inside the pack without extension, image path)] for every image under a folder.
-def images_in(folder):
+# Return [(path inside the pack without extension, image path)] for every image under a folder,
+# leaving out paths (inside the pack) that match an exclude glob.
+def images_in(folder, exclude=()):
     out = []
     for d, dirs, files in os.walk(folder):
         dirs[:] = sorted(x for x in dirs if not x.startswith(("_", ".")))
         for f in sorted(files):
             if f.lower().endswith(IMAGE_EXT):
                 path = os.path.join(d, f)
-                out.append((os.path.splitext(os.path.relpath(path, folder))[0].replace(os.sep, "/"), path))
+                rel = os.path.relpath(path, folder).replace(os.sep, "/")
+                if any(fnmatch.fnmatch(rel, g) for g in exclude):
+                    continue
+                out.append((os.path.splitext(rel)[0], path))
     return out
 
 
@@ -174,6 +195,8 @@ def main(argv=None):
     ap.add_argument("--force", action="store_true", help="overwrite existing pose blocks")
     ap.add_argument("--skip", action="append", default=[], metavar="GLOB",
                     help="inbox entries to leave untouched (repeatable), e.g. 'thousandsOfPoses*'")
+    ap.add_argument("--exclude", action="append", default=[], metavar="GLOB",
+                    help="paths inside packs to leave out (repeatable), e.g. 'site/*'")
     ap.add_argument("--dry-run", action="store_true", help="only report what would be imported")
     args = ap.parse_args(argv)
     base_dir = os.path.join(args.library, "blocks", *OUT_SUBDIR)
@@ -193,21 +216,27 @@ def main(argv=None):
                 if not os.path.isdir(src):
                     root = os.path.join(tmp, slug(stem))
                     unzip(src, root)
-                found, pack = images_in(pack_root(root)), slug(stem)
+                found, pack = images_in(pack_root(root), args.exclude), slug(stem)
             elif entry.lower().endswith(IMAGE_EXT):
                 found, pack = [(stem, src)], None
             else:
                 log(f"{entry}: not an image, zip or folder, left in the inbox")
                 continue
-            photos, skeletons = [], []
+            photos, previews, skeletons = [], [], []
             for rel, img in found:
                 kind, why = classify(img)
                 if kind == "skip":
                     n["skipped"] += 1
                     log(f"{entry}: skip {rel}: {why}")
+                elif kind == "skeleton":
+                    skeletons.append((rel, img))
                 else:
-                    (photos if kind == "photo" else skeletons).append((rel, img))
-            poses = pair(photos, skeletons)
+                    (previews if why == "preview" else photos).append((rel, img))
+            poses = pair_poses(photos, previews, skeletons)
+            dropped = len(previews) - sum(1 for _, ph, _ in poses if ph in {p for _, p in previews})
+            if dropped:
+                n["skipped"] += dropped
+                log(f"{entry}: {dropped} pack preview(s) / cover(s) without a skeleton skipped")
             if not poses:
                 log(f"{entry}: no pose photo or OpenPose skeleton found")
             for rel, photo, skeleton in poses:
