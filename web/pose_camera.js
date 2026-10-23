@@ -89,6 +89,11 @@ function draw(node, cv) {
     g.fillText(`yaw ${c.yaw}°  elevation ${c.elevation}°  zoom ${c.zoom}  ${body.width}x${body.height}`, 8, 14);
     g.fillText("drag: rotate · wheel: zoom · shift+drag: move", 8, h - 8);
     if (st.tags) g.fillText(`last run: ${st.tags}`, 8, 28);
+    if (st.status) {
+        g.font = "bold 13px sans-serif";
+        g.fillStyle = "#ffd25a";
+        g.fillText(st.status, 8, 46);
+    }
 }
 
 // Mouse on one canvas: drag orbits (yaw / elevation), shift+drag moves the subject, wheel zooms.
@@ -255,6 +260,7 @@ app.registerExtension({
             setup(this);
             this.__poseCam.body = unpack(payload);
             this.__poseCam.tags = message?.camera_tags?.[0] || "";
+            this.__poseCam.status = message?.camera_status?.[0] || "";
             drawAll(this);
         };
     },

@@ -253,11 +253,15 @@ class PoseCamera:
                                       "tooltip": "Move the subject in the frame, share of width (+ right)"}),
                 "shift_y": ("FLOAT", {"default": 0.0, "min": -0.5, "max": 0.5, "step": 0.01,
                                       "tooltip": "Move the subject in the frame, share of height (+ up)"}),
+                "stop_on_new_pose": ("BOOLEAN", {"default": True,
+                                                 "tooltip": "Run with a new pose stops here (nothing after this node "
+                                                            "runs): set the camera in the view, Run again to render"}),
             },
             "optional": {
                 "prompt": ("STRING", {"forceInput": True,
                                       "tooltip": "Prompt to get the camera tags; its own camera tags are replaced"}),
             },
+            "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
     RETURN_TYPES = ("IMAGE", "STRING", "STRING")
@@ -265,11 +269,21 @@ class PoseCamera:
     FUNCTION = "shoot"
     CATEGORY = "SceneLoader"
 
+    # Run every time: whether to stop depends on the pose seen by the previous run, not on the inputs.
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")
+
     # Render the OpenPose map for the camera and put its tags into the prompt.
-    def shoot(self, smplx, width, height, framing, yaw, elevation, fov, zoom, shift_x, shift_y, prompt=""):
+    # A pose this node has not shown yet stops the run (outputs blocked) so the camera can be set first.
+    def shoot(self, smplx, width, height, framing, yaw, elevation, fov, zoom, shift_x, shift_y,
+              stop_on_new_pose=True, prompt="", unique_id=None):
         from .sceneloader.pose_camera import merge_camera_tags, pose_body, render_pose, view_payload
         model = _smplx_model(smplx["model_path"], smplx.get("gender", "neutral"))
         body = pose_body(model, smplx)
+        key = pose_key(smplx)
+        new_pose = _POSE_SEEN.get(unique_id) != key
+        _POSE_SEEN[unique_id] = key
         img, tags, points = render_pose(model, smplx, width, height, framing, yaw, elevation, fov, zoom,
                                         shift_x, shift_y, body=body)
         text = ", ".join(tags)
@@ -278,8 +292,28 @@ class PoseCamera:
               f"(yaw {yaw:g}, elevation {elevation:g}, fov {fov:g}, zoom {zoom:g})")
         # The body goes to the node's 3D view (web/pose_camera.js) for mouse camera control.
         ui = {"pose_body": [view_payload(body, width, height)], "camera_tags": [text]}
+        if stop_on_new_pose and new_pose:
+            from comfy_execution.graph_utils import ExecutionBlocker
+            print("[SceneLoader] Pose Camera: new pose, run stopped here; set the camera and Run again to render")
+            ui["camera_status"] = ["New pose: set the camera, then Run again to render."]
+            return {"ui": ui, "result": (ExecutionBlocker(None),) * 3}
         result = (torch.from_numpy(img.astype("float32") / 255.0)[None], merge_camera_tags(prompt or "", tags), text)
         return {"ui": ui, "result": result}
+
+
+# Last pose shown by each Pose Camera node (unique_id -> pose_key); a new pose stops the run once.
+_POSE_SEEN = {}
+
+
+# Hash of the pose parameters (not the camera) of an SMPLX dict.
+def pose_key(smplx):
+    import hashlib
+    import numpy as np
+    h = hashlib.sha1()
+    for k in ("global_orient", "body_pose", "betas", "left_hand_pose", "right_hand_pose", "jaw_pose", "expression"):
+        if k in smplx:
+            h.update(k.encode() + np.asarray(smplx[k], np.float32).tobytes())
+    return h.hexdigest()
 
 
 _SMPLX_CACHE = {}
