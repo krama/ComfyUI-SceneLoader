@@ -1,11 +1,14 @@
 // Pose Camera 3D view: the posed body from the last run, orbit with the mouse; the sliders follow.
+// The view fills the node (resize the node to enlarge it); the ⤢ button opens a large window.
 import { app } from "../../scripts/app.js";
 import { COLORS, LIMBS, shoot, unpack } from "./pose_camera_math.js";
 
-const VIEW_H = 300;
+const MIN_VIEW_H = 220;
 const MARGIN = 0.72; // share of the view the frame takes; the rest shows what is out of frame
 const CAM_KEYS = ["framing", "yaw", "elevation", "fov", "zoom", "shift_x", "shift_y"];
 const LIMITS = { yaw: [-180, 180], elevation: [-80, 89], zoom: [0.3, 4], shift_x: [-0.5, 0.5], shift_y: [-0.5, 0.5] };
+const BTN_CSS = "position:absolute;top:4px;right:4px;width:26px;height:22px;padding:0;border:1px solid #567;"
+    + "border-radius:4px;background:#252a30;color:#ddd;font:14px sans-serif;cursor:pointer;line-height:20px";
 
 const clamp = (v, [lo, hi]) => Math.min(hi, Math.max(lo, v));
 const widget = (node, name) => node.widgets?.find((w) => w.name === name);
@@ -31,11 +34,15 @@ function frameRect(view, body) {
     return { x: (view.width - body.width * k) / 2, y: (view.height - body.height * k) / 2, k };
 }
 
-// Draw the body, skeleton and frame for the current widget values.
-function draw(node) {
+// Redraw every open view of the node (node widget and the large window).
+function drawAll(node) {
+    for (const cv of node.__poseCam.views) draw(node, cv);
+}
+
+// Draw the body, skeleton and frame on one canvas; its bitmap follows its on-screen size.
+function draw(node, cv) {
     const st = node.__poseCam;
-    const cv = st.canvas;
-    const w = Math.max(50, Math.round(cv.clientWidth)), h = VIEW_H;
+    const w = Math.max(50, Math.round(cv.clientWidth)), h = Math.max(50, Math.round(cv.clientHeight));
     if (cv.width !== w) cv.width = w;
     if (cv.height !== h) cv.height = h;
     const g = cv.getContext("2d");
@@ -53,6 +60,7 @@ function draw(node) {
     const toView = (p) => [f.x + p[0] * f.k, f.y + p[1] * f.k];
     g.fillStyle = "#000";
     g.fillRect(f.x, f.y, body.width * f.k, body.height * f.k);
+    const dot = Math.max(2, Math.round(Math.min(w, h) / 220));
     // Far points first, so the near side covers them.
     const order = shot.verts.map((p, i) => i).sort((a, b) => shot.verts[b][2] - shot.verts[a][2]);
     for (const i of order) {
@@ -61,9 +69,9 @@ function draw(node) {
         const [x, y] = toView(p);
         const inside = p[0] >= 0 && p[0] < body.width && p[1] >= 0 && p[1] < body.height;
         g.fillStyle = inside ? "#7d8a99" : "#3d434a";
-        g.fillRect(x - 1, y - 1, 2, 2);
+        g.fillRect(x - dot / 2, y - dot / 2, dot, dot);
     }
-    g.lineWidth = 3;
+    g.lineWidth = Math.max(3, dot + 1);
     LIMBS.forEach(([a, b], i) => {
         const pa = shot.points[a], pb = shot.points[b];
         if (!pa || !pb) return;
@@ -83,7 +91,8 @@ function draw(node) {
     if (st.tags) g.fillText(`last run: ${st.tags}`, 8, 28);
 }
 
-// Mouse: drag orbits (yaw / elevation), shift+drag moves the subject, wheel zooms.
+// Mouse on one canvas: drag orbits (yaw / elevation), shift+drag moves the subject, wheel zooms.
+// Returns a function that removes the window-level wheel listener.
 function bindMouse(node, cv) {
     let last = null, move = false; // move: shift held at press -> shift the subject
     cv.addEventListener("pointerdown", (e) => {
@@ -111,7 +120,7 @@ function bindMouse(node, cv) {
             setValue(node, "yaw", Math.round(yaw));
             setValue(node, "elevation", Math.round(clamp(c.elevation + dy * 0.5, LIMITS.elevation)));
         }
-        draw(node);
+        drawAll(node);
         app.graph.setDirtyCanvas(true, false);
         e.stopPropagation();
     });
@@ -128,22 +137,76 @@ function bindMouse(node, cv) {
         e.stopImmediatePropagation();
         const z = camera(node).zoom * Math.exp(-e.deltaY * 0.001);
         setValue(node, "zoom", +clamp(z, LIMITS.zoom).toFixed(2));
-        draw(node);
+        drawAll(node);
         app.graph.setDirtyCanvas(true, false);
     };
     window.addEventListener("wheel", onWheel, { capture: true, passive: false });
-    node.__poseCam.unbind = () => window.removeEventListener("wheel", onWheel, { capture: true });
+    return () => window.removeEventListener("wheel", onWheel, { capture: true });
+}
+
+// A canvas view in a positioned box, with a corner button; returns {box, canvas, unbind}.
+function makeView(node, label, onButton) {
+    const box = document.createElement("div");
+    box.style.cssText = "position:relative;width:100%;height:100%;min-height:" + MIN_VIEW_H + "px";
+    const cv = document.createElement("canvas");
+    cv.style.cssText = "position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab;touch-action:none";
+    const btn = document.createElement("button");
+    btn.textContent = label;
+    btn.style.cssText = BTN_CSS;
+    btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+    btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        onButton();
+    });
+    box.append(cv, btn);
+    node.__poseCam.views.push(cv);
+    const unbind = bindMouse(node, cv);
+    new ResizeObserver(() => draw(node, cv)).observe(cv);
+    return { box, canvas: cv, unbind };
+}
+
+// Large view in a window over the canvas; closes with ✕, Esc or a click outside it.
+function openLarge(node) {
+    const st = node.__poseCam;
+    if (st.large) return;
+    const shade = document.createElement("div");
+    shade.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.55);display:flex;"
+        + "align-items:center;justify-content:center";
+    const win = document.createElement("div");
+    win.style.cssText = "width:min(1400px,92vw);height:86vh;background:#151515;border:1px solid #567;"
+        + "border-radius:6px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.6)";
+    const close = () => {
+        view.unbind();
+        st.views = st.views.filter((v) => v !== view.canvas);
+        window.removeEventListener("keydown", onKey, true);
+        shade.remove();
+        st.large = null;
+    };
+    const onKey = (e) => {
+        if (e.key === "Escape") {
+            e.stopPropagation();
+            close();
+        }
+    };
+    const view = makeView(node, "✕", close);
+    win.append(view.box);
+    shade.append(win);
+    shade.addEventListener("pointerdown", (e) => e.target === shade && close());
+    window.addEventListener("keydown", onKey, true);
+    document.body.append(shade);
+    st.large = { close };
+    draw(node, view.canvas);
 }
 
 function setup(node) {
     if (node.__poseCam) return;
-    const cv = document.createElement("canvas");
-    cv.style.cssText = `width:100%;height:${VIEW_H}px;display:block;cursor:grab;touch-action:none`;
-    node.__poseCam = { canvas: cv, body: null, tags: "" };
-    node.addDOMWidget("view3d", "pose_camera_view", cv, {
+    node.__poseCam = { views: [], body: null, tags: "", large: null };
+    const view = makeView(node, "⤢", () => openLarge(node));
+    node.__poseCam.unbind = view.unbind;
+    node.addDOMWidget("view3d", "pose_camera_view", view.box, {
         serialize: false,
         hideOnZoom: false,
-        getMinHeight: () => VIEW_H + 4,
+        getMinHeight: () => MIN_VIEW_H,
         getValue: () => undefined,
         setValue: () => {},
     });
@@ -153,14 +216,12 @@ function setup(node) {
         const cb = w.callback;
         w.callback = function () {
             const r = cb?.apply(this, arguments);
-            draw(node);
+            drawAll(node);
             return r;
         };
     }
-    bindMouse(node, cv);
-    new ResizeObserver(() => draw(node)).observe(cv);
-    node.setSize([Math.max(node.size[0], 420), node.computeSize()[1]]);
-    draw(node);
+    node.setSize([Math.max(node.size[0], 420), Math.max(node.size[1], node.computeSize()[1] + 80)]);
+    drawAll(node);
 }
 
 app.registerExtension({
@@ -182,6 +243,7 @@ app.registerExtension({
         };
         const onRemoved = nodeType.prototype.onRemoved;
         nodeType.prototype.onRemoved = function () {
+            this.__poseCam?.large?.close();
             this.__poseCam?.unbind?.();
             return onRemoved?.apply(this, arguments);
         };
@@ -193,7 +255,7 @@ app.registerExtension({
             setup(this);
             this.__poseCam.body = unpack(payload);
             this.__poseCam.tags = message?.camera_tags?.[0] || "";
-            draw(this);
+            drawAll(this);
         };
     },
 });
