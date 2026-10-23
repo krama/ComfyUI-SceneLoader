@@ -241,13 +241,25 @@ def test_pose_inbox_import():
         with zipfile.ZipFile(os.path.join(inbox, "Dancer Pose.zip"), "w") as z:
             for f in os.listdir(pack):
                 z.write(os.path.join(pack, f), f"pack/{f}")
+        # Multi-pose pack: wrapper folder, same file names in subfolders, a preview grid, a skeleton.
+        multi = os.path.join(inbox, "Multi Pack", "Multi Pack v2")
+        for sub in ("pose01", "pose02"):
+            os.makedirs(os.path.join(multi, sub))
+            photo.save(os.path.join(multi, sub, "reference.png"))
+        Image.fromarray(skeleton).save(os.path.join(multi, "pose01", "openpose.png"))
+        open(os.path.join(multi, "pose02", "reference.png.txt"), "w").write("arms up")
+        photo.save(os.path.join(multi, "Preview_Grid.jpg"))
         photo.save(os.path.join(inbox, "kneel.jpg"))
         open(os.path.join(inbox, "kneel.txt"), "w").write("kneeling,\nfrom side")
         assert ipi.main(["--inbox", inbox, "--library", lib_dir]) == 0
         lib = Library(lib_dir)
         blocks = slot_options(lib, "/nonexistent", "illustrious")["pose"]["blocks"]
         assert "poses/civitai/dancer_pose" in blocks and "poses/civitai/kneel" in blocks, blocks
-        assert not [b for b in blocks if "openpose" in b or "depth" in b], blocks
+        assert "poses/civitai/multi_pack/pose01_reference" in blocks, blocks
+        assert "poses/civitai/multi_pack/pose02_reference" in blocks, blocks
+        assert not [b for b in blocks if "openpose" in b or "depth" in b or "preview" in b], blocks
+        r = compose(lib, "/nonexistent", "illustrious", [{"slot": "pose", "use": "poses/civitai/multi_pack/pose02_reference"}])
+        assert "arms up" in r["positive"] and r["pose_image"].endswith("pose02_reference.png"), r
         r = compose(lib, "/nonexistent", "illustrious", [{"slot": "pose", "use": "poses/civitai/kneel"}])
         assert "kneeling, from side" in r["positive"] and r["pose_image"].endswith("kneel.jpg"), r
         left = sorted(os.listdir(inbox))
@@ -255,7 +267,7 @@ def test_pose_inbox_import():
         # A second drop with the same name is kept apart, not overwritten.
         photo.save(os.path.join(inbox, "kneel.jpg"))
         assert ipi.main(["--inbox", inbox, "--library", lib_dir]) == 0
-        assert sorted(os.listdir(os.path.join(inbox, "_imported"))) == ["Dancer Pose.zip", "kneel.2.jpg", "kneel.jpg",
+        assert sorted(os.listdir(os.path.join(inbox, "_imported"))) == ["Dancer Pose.zip", "Multi Pack", "kneel.2.jpg", "kneel.jpg",
                                                                               "kneel.txt"]
 
 
