@@ -105,9 +105,24 @@ def solve_camera(framed, yaw, elevation, fov, zoom, shift_x, shift_y, width, hei
     return eye, rot, focal, offset
 
 
-# Booru camera tags for the shot: framing plus view direction relative to the body.
-def camera_tags(named, rot, elevation, framing):
-    tags = [framing]
+# Shot tag from the joints inside the frame (not from the framing setting, which only fits the camera).
+def shot_tags(inside):
+    head = inside[[0, 14, 15, 16, 17]].any()
+    feet, knees, hips = inside[[10, 13]].any(), inside[[9, 12]].any(), inside[[8, 11]].any()
+    if feet:
+        tags = ["full body"] if head else ["lower body"]
+    elif knees:
+        tags = ["cowboy shot"] + ([] if feet else ["feet out of frame"])
+    elif hips:
+        tags = ["upper body"]
+    else:
+        tags = ["portrait"]
+    return tags + ([] if head else ["head out of frame"])
+
+
+# Booru camera tags for the shot: what is in frame plus view direction relative to the body.
+def camera_tags(named, rot, elevation, inside):
+    tags = shot_tags(inside)
     up = np.array([0.0, 1.0, 0.0])
     right = named["left_hip"] - named["right_hip"]       # person's left
     forward = np.cross(right, up)                        # chest direction (horizontal)
@@ -169,10 +184,10 @@ def render_pose(model, params, width, height, framing="full body", yaw=0.0, elev
     eye, rot, focal, offset = solve_camera(framed, yaw, elevation, fov, zoom, shift_x, shift_y, width, height)
     px, depth = project(joints, eye, rot, focal, width, height)
     px = px + offset
-    vis = visible_face(joints, eye) & (depth > 1e-3)
-    vis &= (px[:, 0] >= 0) & (px[:, 0] < width) & (px[:, 1] >= 0) & (px[:, 1] < height)
+    inside = (depth > 1e-3) & (px[:, 0] >= 0) & (px[:, 0] < width) & (px[:, 1] >= 0) & (px[:, 1] < height)
+    vis = visible_face(joints, eye) & inside
     points = [tuple(px[i]) if vis[i] else None for i in range(18)]
-    return draw_openpose(points, width, height), camera_tags(named, rot, elevation, framing), points
+    return draw_openpose(points, width, height), camera_tags(named, rot, elevation, inside), points
 
 
 # Shot and view tags the camera owns; the same tags already in the prompt are replaced.

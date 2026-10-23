@@ -16,6 +16,16 @@ A_POSE = {"body_pose": np.zeros(63)}  # arms down, so framings can crop the legs
 A_POSE["body_pose"][45 + 2], A_POSE["body_pose"][48 + 2] = -1.2, 1.2  # shoulders about Z
 
 
+def test_shot_tags():
+    m = lambda *idx: np.isin(np.arange(18), idx)  # noqa: E731
+    head, hips, knees, feet = (0, 14, 15), (8, 11), (9, 12), (10, 13)
+    assert pc.shot_tags(m(*head, 1, *hips, *knees, *feet)) == ["full body"]
+    assert pc.shot_tags(m(*head, 1, *hips, *knees)) == ["cowboy shot", "feet out of frame"]
+    assert pc.shot_tags(m(*head, 1, *hips)) == ["upper body"]
+    assert pc.shot_tags(m(*head, 1)) == ["portrait"]
+    assert pc.shot_tags(m(*hips, *knees, *feet)) == ["lower body", "head out of frame"]
+
+
 def test_merge_camera_tags():
     assert pc.merge_camera_tags("1girl, (upper body:1.2), smile, From Above", ["full body"]) == \
         "1girl, smile, full body"
@@ -51,6 +61,11 @@ def check(models_dir):
     assert np.allclose(b[:, 0] - a[:, 0], 0.2 * w, atol=1)
     c = np.array([p for p in pc.render_pose(model, T_POSE, w, h, zoom=0.5)[2]])
     assert np.ptp(c[:, 1]) < 0.6 * np.ptp(a[:, 1])
+    # Tags follow what is in frame, not the framing setting: zoomed in past the knees.
+    _, tags, pts = pc.render_pose(model, A_POSE, w, h, zoom=1.58, shift_y=-0.29)
+    assert pts[10] is None and pts[13] is None and "full body" not in tags, (tags, pts)
+    _, tags, pts = pc.render_pose(model, A_POSE, w, h, zoom=1.3, shift_y=-0.15)
+    assert pts[9] and pts[10] is None and tags[:2] == ["cowboy shot", "feet out of frame"], (tags, pts)
     print("ok  render_pose: fit, sides, back view, tags, framing, shift, zoom")
     check_js(model)
 
@@ -94,8 +109,9 @@ def check_js(model):
 
 
 if __name__ == "__main__":
+    test_shot_tags()
     test_merge_camera_tags()
-    print("ok  test_merge_camera_tags")
+    print("ok  test_shot_tags, test_merge_camera_tags")
     models = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("SMPLX_MODELS", "")
     if not models:
         print("skip render_pose: pass the models dir or set SMPLX_MODELS")
