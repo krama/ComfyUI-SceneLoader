@@ -29,7 +29,7 @@ def skeleton_png(path):
     Image.fromarray(draw_openpose(POINTS, 480, 640)).save(path)
 
 
-def test_classify_and_queue():
+def test_classify_and_import():
     with tempfile.TemporaryDirectory() as tmp:
         sk, line, photo = (os.path.join(tmp, n) for n in ("sk.png", "line.png", "photo.png"))
         skeleton_png(sk)
@@ -51,12 +51,15 @@ def test_classify_and_queue():
         skeleton_png(os.path.join(mixed, "openpose.png"))
         Image.open(photo).save(os.path.join(mixed, "ref.png"))
         assert ipi.main(["--inbox", inbox, "--library", lib]) == 0
+        import yaml
         civ = os.path.join(lib, "blocks", "poses", "civitai")
-        assert sorted(os.listdir(os.path.join(civ, "skel_pack", "_pending"))) == ["a.png", "b.png", "b.txt"]
-        assert not [f for f in os.listdir(os.path.join(civ, "skel_pack")) if f.endswith(".yaml")]
-        assert os.path.isfile(os.path.join(civ, "mixed.yaml")), os.listdir(civ)  # photo wins
-        assert not os.path.exists(os.path.join(civ, "_pending"))
-    print("ok  test_classify_and_queue")
+        b = yaml.safe_load(open(os.path.join(civ, "skel_pack", "b.yaml")))
+        assert b == {"name": "b", "kind": "pose", "tags": "arms out", "source": "civitai",
+                     "skeleton": "b_skeleton.png"}, b
+        assert os.path.isfile(os.path.join(civ, "skel_pack", "a_skeleton.png"))
+        m = yaml.safe_load(open(os.path.join(civ, "mixed.yaml")))  # one folder: photo + skeleton
+        assert m["image"] == "mixed.png" and m["skeleton"] == "mixed_skeleton.png", m
+    print("ok  test_classify_and_import")
 
 
 class FakeComfy(BaseHTTPRequestHandler):
@@ -98,38 +101,57 @@ class FakeComfy(BaseHTTPRequestHandler):
             self._send(buf.getvalue(), "image/png")
 
 
+def test_pairing():
+    k = ipi.pose_key
+    assert k("o1") == k("r1") == ("", "1") and k("o1") != k("o11")
+    assert k("set/lying,head_tilt,") == k("set/lying,head_tilt,--") == k("set/lying_head_tilt_openpose")
+    assert k("x/pose_3_ref") == k("x/pose_3_openpose") != k("y/pose_3_ref")
+    photos = [("r1", "P1"), ("r2", "P2"), ("solo/shot", "PS"), ("many/a", "A"),
+                                                ("many/b", "B")]
+    skels = [("o1", "S1"), ("o3", "S3"), ("solo/keypoints_rendered", "SS"), ("many/c", "C")]
+    got = ipi.pair(photos, skels)
+    assert got == [("many/a", "A", None), ("many/b", "B", None), ("many/c", None, "C"), ("o3", None, "S3"),
+                   ("r1", "P1", "S1"), ("r2", "P2", None), ("solo/shot", "PS", "SS")], got
+    print("ok  test_pairing")
+
+
 def test_skeleton_to_figure():
     srv = HTTPServer(("127.0.0.1", 0), FakeComfy)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         with tempfile.TemporaryDirectory() as lib:
-            pend = os.path.join(lib, "blocks", "poses", "civitai", "pk", "_pending")
-            os.makedirs(pend)
-            skeleton_png(os.path.join(pend, "a.png"))
-            open(os.path.join(pend, "a.txt"), "w").write("arms out")
-            rc = stf.main(["--library", lib, "--smplx-dir", "M", "--nlf-dir", "N", "--seed", "7",
+            import yaml
+            d = os.path.join(lib, "blocks", "poses", "civitai", "pk")
+            os.makedirs(d)
+            skeleton_png(os.path.join(d, "a_skeleton.png"))
+            for n in ("a", "z"):
+                yaml.safe_dump({"name": n, "kind": "pose", "tags": "arms out", "skeleton": "a_skeleton.png"},
+                               open(os.path.join(d, f"{n}.yaml"), "w"), sort_keys=False)
+            yaml.safe_dump({"name": "p", "kind": "pose", "image": "p.png", "skeleton": "a_skeleton.png"},
+                           open(os.path.join(d, "p.yaml"), "w"))
+            pending = stf.find_pending(lib)
+            assert [r for _, r, _ in pending] == ["poses/civitai/pk/a", "poses/civitai/pk/z"], pending
+            assert [r for _, r, _ in stf.find_pending(lib, ["*/z"])] == ["poses/civitai/pk/z"]
+            rc = stf.main(["--library", lib, "--smplx-dir", "M", "--nlf-dir", "N", "--seed", "7", "--only", "*/a",
                            "--server", f"http://127.0.0.1:{srv.server_port}"])
             assert rc == 0
-            d = os.path.dirname(pend)
-            assert sorted(os.listdir(d)) == ["_pending", "a.png", "a.yaml", "a_skeleton.png", "a_skeleton.txt"]
-            assert os.listdir(pend) == []
-            import yaml
             data = yaml.safe_load(open(os.path.join(d, "a.yaml")))
-            assert data == {"name": "a", "kind": "pose", "tags": "arms out", "image": "a.png",
-                            "skeleton": "a_skeleton.png", "source": "civitai", "figure_seed": 8}, data
+            assert data == {"name": "a", "kind": "pose", "tags": "arms out", "skeleton": "a_skeleton.png",
+                            "image": "a.png", "figure_seed": 8}, data
+            assert os.path.isfile(os.path.join(d, "a.png")) and "image" not in yaml.safe_load(open(os.path.join(d, "z.yaml")))
             p = FakeComfy.prompts
             assert len(p) == 2 and p[0]["10"]["inputs"]["seed"] == 7 and p[1]["10"]["inputs"]["seed"] == 8
             assert p[0]["5"]["inputs"]["image"] == f"{stf.UPLOAD_SUBFOLDER}/x.png"
             assert (p[0]["8"]["inputs"]["width"], p[0]["8"]["inputs"]["height"]) == (896, 1152)  # 480x640 -> ~1 MP
             assert p[0]["15"]["inputs"]["image"] == ["11", 0] and p[0]["13"]["inputs"]["model_path"] == "M"
             assert b'name="image"; filename="a.png"' in FakeComfy.uploads[0]
-            # Nothing queued: clean exit.
-            assert stf.main(["--library", lib, "--smplx-dir", "M", "--nlf-dir", "N"]) == 0
+            assert stf.main(["--library", lib, "--smplx-dir", "M", "--nlf-dir", "N", "--only", "nothing"]) == 0
     finally:
         srv.shutdown()
     print("ok  test_skeleton_to_figure")
 
 
 if __name__ == "__main__":
-    test_classify_and_queue()
+    test_classify_and_import()
+    test_pairing()
     test_skeleton_to_figure()

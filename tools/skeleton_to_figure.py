@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Turn queued OpenPose skeletons into pose blocks with a figure image, via a running ComfyUI.
+"""Give skeleton-only pose blocks a figure image (for the 3D pose path), via a running ComfyUI.
 
-import_pose_inbox.py queues skeleton-only poses as <dir>/_pending/<slug>.png. For each one this
-uploads the skeleton, queues a small graph (checkpoint -> ControlNet OpenPose -> KSampler -> VAE
-decode -> SaveImage, plus NLF on the result as a check) and waits. When NLF finds a person, the
-figure is written as <dir>/<slug>.png with <slug>.yaml ({name, kind: pose, tags, image, skeleton})
-and the skeleton is kept as <slug>_skeleton.png; when it does not, the next seed is tried.
-Stdlib only, so any python runs it. Uses the GPU of the ComfyUI it talks to.
+Pose blocks with a skeleton but no image (import_pose_inbox.py) work as 2D ControlNet maps. For
+each one picked (--only / --limit) this uploads the skeleton, queues a small graph (checkpoint ->
+ControlNet OpenPose -> KSampler -> VAE decode -> SaveImage, plus NLF on the result as a check) and
+waits. When NLF finds a person, the figure is saved as <slug>.png next to the block and its yaml
+gets image: (and figure_seed:); when it does not, the next seed is tried.
+Stdlib + PyYAML (the ComfyUI venv has it). Uses the GPU of the ComfyUI it talks to.
 """
 import argparse
+import fnmatch
 import json
 import os
-import shutil
 import sys
 import time
 import urllib.parse
@@ -20,7 +20,6 @@ import uuid
 
 import yaml
 
-PENDING_DIR = "_pending"
 UPLOAD_SUBFOLDER = "sceneloader_pending"
 POSITIVE = ("masterpiece, best quality, 1girl, solo, full body, plain grey bodysuit, barefoot, "
             "simple background, white background")
@@ -32,17 +31,24 @@ def log(msg):
     print(f"[skeleton-to-figure] {msg}", flush=True)
 
 
-# Return [(block dir, slug, skeleton png)] for every queued skeleton under the library's pose blocks.
-def find_pending(library):
+# Return [(block yaml, ref, skeleton png)] for pose blocks with a skeleton and no image.
+def find_pending(library, only=()):
     out = []
-    root = os.path.join(library, "blocks", "poses")
-    for d, dirs, files in os.walk(root):
+    root = os.path.join(library, "blocks")
+    for d, dirs, files in os.walk(os.path.join(root, "poses")):
         dirs.sort()
-        if os.path.basename(d) != PENDING_DIR:
-            continue
         for f in sorted(files):
-            if f.lower().endswith(".png"):
-                out.append((os.path.dirname(d), os.path.splitext(f)[0], os.path.join(d, f)))
+            if not f.endswith((".yaml", ".yml")):
+                continue
+            path = os.path.join(d, f)
+            with open(path, encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+            if not isinstance(data, dict) or data.get("image") or not data.get("skeleton"):
+                continue
+            ref = os.path.splitext(os.path.relpath(path, root))[0].replace(os.sep, "/")
+            if only and not any(fnmatch.fnmatch(ref, g) for g in only):
+                continue
+            out.append((path, ref, os.path.join(d, str(data["skeleton"]))))
     return out
 
 
@@ -138,8 +144,8 @@ def failure(entry):
     return "; ".join(e.strip() for e in errs) or status.get("status_str") or "unknown error"
 
 
-# Make one figure for a queued skeleton; returns the written yaml path or None after all tries.
-def convert(comfy, a, block_dir, name, skeleton):
+# Make the figure for one skeleton-only block; returns True when its yaml got an image.
+def convert(comfy, a, block, name, skeleton):
     with open(skeleton, "rb") as fh:  # PNG IHDR: width, height
         head = fh.read(24)
     width, height = int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
@@ -157,21 +163,16 @@ def convert(comfy, a, block_dir, name, skeleton):
         if not images:
             log(f"{name}: seed {seed}: no image in the SaveImage output")
             continue
-        png = comfy.download(images[0])
-        with open(os.path.join(block_dir, name + ".png"), "wb") as fh:
-            fh.write(png)
-        tags_file = os.path.splitext(skeleton)[0] + ".txt"
-        tags = open(tags_file, encoding="utf-8").read().strip() if os.path.isfile(tags_file) else ""
-        data = {"name": name, "kind": "pose", "tags": tags, "image": name + ".png",
-                "skeleton": name + "_skeleton.png", "source": "civitai", "figure_seed": seed}
-        block = os.path.join(block_dir, name + ".yaml")
+        with open(block, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        data["image"] = os.path.splitext(os.path.basename(block))[0] + ".png"
+        data["figure_seed"] = seed
+        with open(os.path.join(os.path.dirname(block), data["image"]), "wb") as fh:
+            fh.write(comfy.download(images[0]))
         with open(block, "w", encoding="utf-8") as fh:
             yaml.safe_dump(data, fh, allow_unicode=True, sort_keys=False)
-        shutil.move(skeleton, os.path.join(block_dir, name + "_skeleton.png"))
-        if os.path.isfile(tags_file):
-            shutil.move(tags_file, os.path.join(block_dir, name + "_skeleton.txt"))
-        return block
-    return None
+        return True
+    return False
 
 
 def main(argv=None):
@@ -192,9 +193,11 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--tries", type=int, default=3, help="seeds to try when NLF finds no person")
     ap.add_argument("--timeout", type=float, default=600.0, help="seconds per generation")
+    ap.add_argument("--only", action="append", default=[], metavar="GLOB",
+                    help="block refs to convert (repeatable), e.g. 'poses/civitai/sportlikeposes*'")
     ap.add_argument("--limit", type=int, default=0, help="convert at most N skeletons (0 = all)")
     a = ap.parse_args(argv)
-    pending = find_pending(a.library)
+    pending = find_pending(a.library, a.only)
     if a.limit:
         pending = pending[:a.limit]
     if not pending:
@@ -202,17 +205,15 @@ def main(argv=None):
         return 0
     comfy = Comfy(a.server)
     done = failed = 0
-    for block_dir, name, skeleton in pending:
-        rel = os.path.relpath(os.path.join(block_dir, name), os.path.join(a.library, "blocks"))
-        log(f"{rel}: generating figure ({done + failed + 1}/{len(pending)})")
-        block = convert(comfy, a, block_dir, name, skeleton)
-        if block:
+    for block, ref, skeleton in pending:
+        log(f"{ref}: generating figure ({done + failed + 1}/{len(pending)})")
+        if convert(comfy, a, block, os.path.basename(ref), skeleton):
             done += 1
-            log(f"{rel}: ok -> {os.path.basename(block)}")
+            log(f"{ref}: ok")
         else:
             failed += 1
-            log(f"{rel}: no figure after {a.tries} seeds, left in {PENDING_DIR}/ (try --seed / --strength)")
-    log(f"{done} converted, {failed} left queued")
+            log(f"{ref}: no figure after {a.tries} seeds, stays skeleton-only (try --seed / --strength)")
+    log(f"{done} converted, {failed} still skeleton-only")
     return 0 if not failed else 1
 
 

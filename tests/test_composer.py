@@ -251,6 +251,13 @@ def test_pose_inbox_import():
         photo.save(os.path.join(multi, "Preview_Grid.jpg"))
         photo.save(os.path.join(inbox, "kneel.jpg"))
         open(os.path.join(inbox, "kneel.txt"), "w").write("kneeling,\nfrom side")
+        # Dry run writes and moves nothing; --skip leaves matching entries alone.
+        before = sorted(os.listdir(inbox))
+        assert ipi.main(["--inbox", inbox, "--library", lib_dir, "--dry-run"]) == 0
+        assert sorted(os.listdir(inbox)) == before
+        assert not os.path.exists(os.path.join(lib_dir, "blocks", "poses", "civitai", "kneel.yaml"))
+        assert ipi.main(["--inbox", inbox, "--library", lib_dir, "--skip", "Multi*", "--skip", "Dancer*",
+                         "--dry-run"]) == 0
         assert ipi.main(["--inbox", inbox, "--library", lib_dir]) == 0
         lib = Library(lib_dir)
         blocks = slot_options(lib, "/nonexistent", "illustrious")["pose"]["blocks"]
@@ -260,6 +267,11 @@ def test_pose_inbox_import():
         assert not [b for b in blocks if "openpose" in b or "depth" in b or "preview" in b], blocks
         r = compose(lib, "/nonexistent", "illustrious", [{"slot": "pose", "use": "poses/civitai/multi_pack/pose02_reference"}])
         assert "arms up" in r["positive"] and r["pose_image"].endswith("pose02_reference.png"), r
+        assert r["pose_skeleton"] is None, r
+        # pose01: photo and skeleton share the folder -> one pose with both.
+        r = compose(lib, "/nonexistent", "illustrious", [{"slot": "pose", "use": "poses/civitai/multi_pack/pose01_reference"}])
+        assert r["pose_image"].endswith("pose01_reference.png"), r
+        assert r["pose_skeleton"].endswith("pose01_reference_skeleton.png"), r
         r = compose(lib, "/nonexistent", "illustrious", [{"slot": "pose", "use": "poses/civitai/kneel"}])
         assert "kneeling, from side" in r["positive"] and r["pose_image"].endswith("kneel.jpg"), r
         left = sorted(os.listdir(inbox))

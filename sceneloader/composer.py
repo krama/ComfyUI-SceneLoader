@@ -320,26 +320,27 @@ def compose(lib, loras_dir, base, rows, camera=None):
         if removed:
             notes.append(f"{key}: duplicate tags removed: {', '.join(removed)}")
     result["pose_image"] = pose_image(lib, rows, notes)
+    result["pose_skeleton"] = pose_image(lib, rows, notes, "skeleton")
     return result
 
 
 # Return the sample image path of the first chosen pose block that has one ("image" key), or None.
-def pose_image(lib, rows, notes):
+def pose_image(lib, rows, notes, key="image"):
     for row in rows:
         if row.get("slot") != "pose" or row.get("none") or not row.get("use"):
             continue
         path = lib.path("blocks", row["use"])
-        image = load_yaml(path).get("image")
+        image = load_yaml(path).get(key)
         if not image:
             continue
         full = os.path.realpath(os.path.join(os.path.dirname(path), str(image)))
         if not full.startswith(os.path.realpath(lib.root) + os.sep):
-            notes.append(f"pose_image: {row['use']} image outside the library ignored: {image}")
+            notes.append(f"pose_{key}: {row['use']} {key} outside the library ignored: {image}")
             continue
         if os.path.isfile(full):
-            notes.append(f"pose_image <- {row['use']} ({image})")
+            notes.append(f"pose_{key} <- {row['use']} ({image})")
             return full
-        notes.append(f"pose_image: {row['use']} image not found: {image}")
+        notes.append(f"pose_{key}: {row['use']} {key} not found: {image}")
     return None
 
 
