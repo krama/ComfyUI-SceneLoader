@@ -107,6 +107,7 @@ Run with the ComfyUI venv python; none of them is loaded by ComfyUI.
 | --- | --- |
 | `import_pose_inbox.py` | Pose images / zips / folders (Civitai downloads) -> pose blocks; photos and skeletons paired by name; `--dry-run`, `--skip` |
 | `import_pose_pack.py` | Pose card pack (`POSES.yaml` + images) -> pose blocks |
+| `tag_poses.py` | Pose tags for pose blocks from their images with a WD14 tagger (ONNX); keeps only pose / gesture / viewpoint tags |
 | `skeleton_to_figure.py` | Skeleton-only pose blocks get a figure image via a running ComfyUI (ControlNet + NLF check); `--only`, `--limit` |
 | `fetch_civitai_meta.py` | Civitai metadata (weights, triggers, usage tips) next to each LoRA |
 | `classify_loras.py`, `relocate.py` | Propose / apply a LoRA folder layout (plan CSV) |
