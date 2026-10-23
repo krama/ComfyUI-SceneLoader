@@ -247,15 +247,19 @@ class PoseCamera:
 
     # Render the OpenPose map for the camera and put its tags into the prompt.
     def shoot(self, smplx, width, height, framing, yaw, elevation, fov, zoom, shift_x, shift_y, prompt=""):
-        from .sceneloader.pose_camera import merge_camera_tags, render_pose
+        from .sceneloader.pose_camera import merge_camera_tags, pose_body, render_pose, view_payload
         model = _smplx_model(smplx["model_path"], smplx.get("gender", "neutral"))
+        body = pose_body(model, smplx)
         img, tags, points = render_pose(model, smplx, width, height, framing, yaw, elevation, fov, zoom,
-                                        shift_x, shift_y)
+                                        shift_x, shift_y, body=body)
         text = ", ".join(tags)
         seen = sum(p is not None for p in points)
         print(f"[SceneLoader] Pose Camera {width}x{height}: {text}; {seen}/18 points in frame "
               f"(yaw {yaw:g}, elevation {elevation:g}, fov {fov:g}, zoom {zoom:g})")
-        return (torch.from_numpy(img.astype("float32") / 255.0)[None], merge_camera_tags(prompt or "", tags), text)
+        # The body goes to the node's 3D view (web/pose_camera.js) for mouse camera control.
+        ui = {"pose_body": [view_payload(body, width, height)], "camera_tags": [text]}
+        result = (torch.from_numpy(img.astype("float32") / 255.0)[None], merge_camera_tags(prompt or "", tags), text)
+        return {"ui": ui, "result": result}
 
 
 _SMPLX_CACHE = {}

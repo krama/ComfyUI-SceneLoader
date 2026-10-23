@@ -39,16 +39,42 @@ def camera_rotation(yaw, elevation):
     return ry @ rx  # columns: camera right, up, back (camera looks along -column 2)
 
 
-# Vertices that must be in the shot for a framing (lbs weights pick each vertex's main joint).
-def framing_vertices(model, verts, framing):
+# Every STEP-th vertex is used for framing; the browser view gets the same points (same fit).
+STEP = 4
+
+
+# Bool mask per framing over all vertices (lbs weights pick each vertex's main joint).
+def framing_masks(model):
     from smplx.joint_names import JOINT_NAMES
-    rule = FRAMING[framing]
-    if rule is None:
-        return verts
     owner = np.asarray(model.lbs_weights.detach().cpu().numpy()).argmax(1)
     names = np.array(JOINT_NAMES[:model.lbs_weights.shape[1]])[owner]
-    keep = np.isin(names, list(_HEAD)) if rule == "head" else ~np.isin(names, list(rule))
-    return verts[keep]
+    out = {}
+    for framing, rule in FRAMING.items():
+        if rule is None:
+            out[framing] = np.ones(len(names), bool)
+        elif rule == "head":
+            out[framing] = np.isin(names, list(_HEAD))
+        else:
+            out[framing] = ~np.isin(names, list(rule))
+    return out
+
+
+# Posed body for the camera: (sampled vertices, {framing: mask over them}, 18 joints, named joints).
+def pose_body(model, params):
+    verts, named = posed_body(model, params)
+    masks = {k: m[::STEP] for k, m in framing_masks(model).items()}
+    return verts[::STEP], masks, openpose_joints(named), named
+
+
+# Data for the browser view (web/pose_camera_math.js): same points and masks as render_pose.
+def view_payload(body, width, height):
+    verts, masks, joints, _ = body
+    bits = np.zeros(len(verts), np.int64)
+    for i, framing in enumerate(FRAMING):
+        bits |= masks[framing].astype(np.int64) << i
+    return {"width": int(width), "height": int(height), "framings": list(FRAMING), "fill": FILL,
+            "verts": np.round(verts, 5).reshape(-1).tolist(), "bits": bits.tolist(),
+            "joints": np.round(joints, 5).reshape(-1).tolist()}
 
 
 # Perspective projection: points (N, 3) -> (pixels (N, 2), depth (N,)) for a camera at eye.
@@ -133,13 +159,13 @@ def draw_openpose(points, width, height):
 
 
 # SMPL-X pose + camera settings -> (OpenPose map uint8 (H, W, 3), tags list, points list).
+# body: pose_body() result, to reuse it for view_payload.
 def render_pose(model, params, width, height, framing="full body", yaw=0.0, elevation=0.0, fov=40.0,
-                zoom=1.0, shift_x=0.0, shift_y=0.0):
+                zoom=1.0, shift_x=0.0, shift_y=0.0, body=None):
     if framing not in FRAMING:
         raise ValueError(f"unknown framing {framing!r}, expected one of {list(FRAMING)}")
-    verts, named = posed_body(model, params)
-    joints = openpose_joints(named)
-    framed = framing_vertices(model, verts, framing)
+    verts, masks, joints, named = body or pose_body(model, params)
+    framed = verts[masks[framing]]
     eye, rot, focal, offset = solve_camera(framed, yaw, elevation, fov, zoom, shift_x, shift_y, width, height)
     px, depth = project(joints, eye, rot, focal, width, height)
     px = px + offset
