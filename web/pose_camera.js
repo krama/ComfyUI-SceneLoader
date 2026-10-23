@@ -208,13 +208,15 @@ function setup(node) {
     node.__poseCam = { views: [], body: null, tags: "", large: null };
     const view = makeView(node, "⤢", () => openLarge(node));
     node.__poseCam.unbind = view.unbind;
-    node.addDOMWidget("view3d", "pose_camera_view", view.box, {
+    const w = node.addDOMWidget("view3d", "pose_camera_view", view.box, {
         serialize: false,
         hideOnZoom: false,
         getMinHeight: () => MIN_VIEW_H,
         getValue: () => undefined,
         setValue: () => {},
     });
+    // Not saved in widgets_values: an extra value there shifts widgets the node gains later.
+    if (w) w.serialize = false;
     for (const k of CAM_KEYS) {
         const w = widget(node, k);
         if (!w) continue;
