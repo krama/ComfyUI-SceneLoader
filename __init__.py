@@ -91,6 +91,10 @@ class SceneComposer:
             "base": (list(KNOWN_BASES), {"tooltip": "LoRA base folder under loras/"}),
             "composition": ("STRING", {"multiline": True, "default": "[]",
                                        "tooltip": "Slot rows as JSON; edited by the composer UI"}),
+            "pose_camera": ("BOOLEAN", {"default": False,
+                                        "tooltip": "On in graphs with Pose Camera: a pose with a sample image "
+                                                   "gets its camera from Pose Camera, camera rows and the "
+                                                   "camera input are left out (tags and LoRAs)"}),
         }, "optional": {
             "camera": ("STRING", {"forceInput": True,
                                   "tooltip": "Replaces the camera slot when connected: text tags/prompt, or "
@@ -109,12 +113,13 @@ class SceneComposer:
 
     # Re-run when any library file changes on disk.
     @classmethod
-    def IS_CHANGED(cls, base, composition, camera=None, **legacy):
+    def IS_CHANGED(cls, base, composition, pose_camera=False, camera=None, **legacy):
         return Library(library_root()).fingerprint()
 
     # Assemble the rows into prompts and SimplePowerLora stacks.
     # Graphs saved before the single camera input still send camera_json / camera_prompt (legacy).
-    def compose(self, base, composition, camera=None, camera_json=None, camera_prompt=None, **legacy):
+    def compose(self, base, composition, pose_camera=False, camera=None, camera_json=None, camera_prompt=None,
+                **legacy):
         lib = Library(library_root())
         try:
             rows = json.loads(composition or "[]")
@@ -128,7 +133,7 @@ class SceneComposer:
             cam = camera_input_tags(base, camera)
             if cam is not None:
                 print(f"[SceneComposer] camera input -> {cam}")
-            result = compose(lib, lora_root(base), base, rows, cam)
+            result = compose(lib, lora_root(base), base, rows, cam, pose_camera is True)
         except (SceneError, ValueError) as e:
             print(f"[SceneComposer] {base}: {e}")
             raise SceneError(str(e))

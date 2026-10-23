@@ -582,13 +582,15 @@ function setup(node) {
     if (comp.element) comp.element.style.display = "none";
     const box = el("div", { style: "font:12px sans-serif;display:flex;flex-direction:column;gap:2px;overflow:auto" });
     node.__composer = { comp, box, height: ROW_H * 2 };
-    node.addDOMWidget("composer", "composer", box, {
+    const domW = node.addDOMWidget("composer", "composer", box, {
         serialize: false,
         hideOnZoom: false,
         getMinHeight: () => node.__composer.height,
         getValue: () => undefined,
         setValue: () => {},
     });
+    // Not saved in widgets_values: an extra value there shifts widgets the node gains later.
+    if (domW) domW.serialize = false;
     const cb = baseW.callback;
     baseW.callback = function () {
         const r = cb?.apply(this, arguments);

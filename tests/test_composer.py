@@ -217,6 +217,32 @@ def test_pose_pack_and_pose_image():
         assert r["pose_image"] is None and any("outside the library" in n for n in r["notes"]), r["notes"]
 
 
+def test_pose_camera_skips_camera_rows():
+    import shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        lib_dir = os.path.join(tmp, "lib")
+        shutil.copytree(EXAMPLES, lib_dir)
+        poses = os.path.join(lib_dir, "blocks", "poses")
+        os.makedirs(poses, exist_ok=True)
+        open(os.path.join(poses, "stand.yaml"), "w").write("name: stand\nkind: pose\ntags: standing\nimage: stand.png\n")
+        open(os.path.join(poses, "stand.png"), "wb").write(b"png")
+        open(os.path.join(poses, "tagonly.yaml"), "w").write("name: tagonly\nkind: pose\ntags: sitting\n")
+        loras = os.path.join(tmp, "loras")
+        os.makedirs(os.path.join(loras, "illustrious", "camera"))
+        open(os.path.join(loras, "illustrious", "camera", "lowangle.safetensors"), "wb").write(b"x")
+        lib = Library(lib_dir)
+        cam_rows = [{"slot": "camera", "lora": "camera/lowangle.safetensors"}, {"slot": "camera", "tags": "from below"}]
+        r = compose(lib, loras, "illustrious", [{"slot": "pose", "use": "poses/stand"}] + cam_rows, "dutch angle", True)
+        assert "from below" not in r["positive"] and "dutch angle" not in r["positive"], r["positive"]
+        assert not [l for l in r["loras"] if "lowangle" in l["file"]], r["loras"]
+        assert any("Pose Camera" in n for n in r["notes"]), r["notes"]
+        # Without the flag, or for a pose without a sample image, camera rows stay.
+        for rows, flag in (([{"slot": "pose", "use": "poses/stand"}] + cam_rows, False),
+                           ([{"slot": "pose", "use": "poses/tagonly"}] + cam_rows, True)):
+            r = compose(lib, loras, "illustrious", rows, None, flag)
+            assert "from below" in r["positive"] and [l for l in r["loras"] if "lowangle" in l["file"]], r
+
+
 def test_pose_inbox_import():
     import shutil
     import zipfile
@@ -286,6 +312,6 @@ def test_pose_inbox_import():
 if __name__ == "__main__":
     for fn in (test_compose_order_weights_triggers, test_not_chosen_and_missing, test_slot_options,
                test_block_lora_weights, test_camera_input, test_scene_preset_roundtrip, test_detailer_row, test_dedupe_tags,
-               test_pose_pack_and_pose_image, test_pose_inbox_import):
+               test_pose_pack_and_pose_image, test_pose_inbox_import, test_pose_camera_skips_camera_rows):
         fn()
         print(f"ok  {fn.__name__}")

@@ -311,8 +311,15 @@ def dedupe_tags(text):
 
 
 # Assemble composer rows; camera (tags) replaces the camera slot when not None. Same result as assemble.
-def compose(lib, loras_dir, base, rows, camera=None):
+# pose_camera: a pose with a sample image gets its camera from Pose Camera, so camera rows (tags and
+# LoRAs) and the camera input are left out.
+def compose(lib, loras_dir, base, rows, camera=None, pose_camera=False):
     notes = []
+    if pose_camera and pose_image(lib, rows, []):
+        skipped = [r.get("use") or r.get("lora") or "tags" for r in rows if r.get("slot") == "camera"]
+        rows, camera = [r for r in rows if r.get("slot") != "camera"], None
+        notes.append("camera rows skipped, Pose Camera sets the camera of the 3D pose"
+                     + (f": {', '.join(skipped)}" if skipped else ""))
     scene = rows_to_scene(rows, loras_dir, base, notes, camera)
     result = assemble_raw(lib, scene, "composer", None, notes)
     for key in ("positive", "negative"):
