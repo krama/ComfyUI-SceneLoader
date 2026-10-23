@@ -173,33 +173,90 @@ def draw_openpose(points, width, height):
     return canvas
 
 
-# SMPL-X pose + camera settings -> (OpenPose map uint8 (H, W, 3), tags list, points list).
-# body: pose_body() result, to reuse it for view_payload; cam: dict that receives the solved camera
-# (eye, rot, focal, offset), for depth_map.
-def render_pose(model, params, width, height, framing="full body", yaw=0.0, elevation=0.0, fov=40.0,
-                zoom=1.0, shift_x=0.0, shift_y=0.0, body=None, cam=None):
+MAX_EXTEND = 2.0  # overscan canvas side at most this many times the frame side
+
+
+# Overscan canvas around the frame that also holds the whole body (frame pixel coords, px (N, 2)).
+# Returns {width, height, x0, y0, sx, sy, crop: (x, y, w, h)}: canvas pixel = (frame pixel - x0/y0) * sx/sy,
+# with about pixels x frame pixels in total (never more resolution than the frame). None: body fits.
+def overscan_canvas(px, width, height, pixels=1.3, margin=0.03):
+    size = np.array([width, height], float)
+    lo = np.minimum(px.min(0) - margin * size, 0)
+    hi = np.maximum(px.max(0) + margin * size, size)
+    if (lo > -1).all() and (hi < size + 1).all():
+        return None
+    ext = (hi - lo) - size                                   # extension per axis, split before / after
+    cap = (MAX_EXTEND - 1) * size
+    k = np.minimum(1.0, cap / np.maximum(ext, 1e-9))
+    lo, hi = lo * k, size + (hi - size) * k
+    span = hi - lo
+    s = min(1.0, float(np.sqrt(pixels * width * height / (span[0] * span[1]))))
+    cw, ch = (max(64, int(round(v * s / 64)) * 64) for v in span)
+    sx = sy = min(cw / span[0], ch / span[1])  # one scale keeps the frame aspect; rounding slack goes right / down
+    crop = (int(round(-lo[0] * sx)), int(round(-lo[1] * sy)), int(round(width * sx)), int(round(height * sy)))
+    return {"width": cw, "height": ch, "x0": float(lo[0]), "y0": float(lo[1]), "sx": sx, "sy": sy, "crop": crop}
+
+
+# Identity canvas: the frame itself.
+def frame_canvas(width, height):
+    return {"width": width, "height": height, "x0": 0.0, "y0": 0.0, "sx": 1.0, "sy": 1.0,
+            "crop": (0, 0, width, height)}
+
+
+# Frame pixel coords -> canvas pixel coords.
+def to_canvas(px, canvas):
+    return (px - [canvas["x0"], canvas["y0"]]) * [canvas["sx"], canvas["sy"]]
+
+
+# One shot: OpenPose map on the canvas (frame, or overscan canvas holding the whole body), tags and
+# points of the frame, solved camera and canvas. body: pose_body() result; overscan: pixels budget or None.
+def shot(model, params, width, height, framing="full body", yaw=0.0, elevation=0.0, fov=40.0, zoom=1.0,
+         shift_x=0.0, shift_y=0.0, body=None, overscan=None):
     if framing not in FRAMING:
         raise ValueError(f"unknown framing {framing!r}, expected one of {list(FRAMING)}")
     verts, masks, joints, named = body or pose_body(model, params)
-    framed = verts[masks[framing]]
-    eye, rot, focal, offset = solve_camera(framed, yaw, elevation, fov, zoom, shift_x, shift_y, width, height)
-    if cam is not None:
-        cam.update(eye=eye, rot=rot, focal=focal, offset=offset)
+    eye, rot, focal, offset = solve_camera(verts[masks[framing]], yaw, elevation, fov, zoom, shift_x, shift_y,
+                                           width, height)
     px, depth = project(joints, eye, rot, focal, width, height)
     px = px + offset
     inside = (depth > 1e-3) & (px[:, 0] >= 0) & (px[:, 0] < width) & (px[:, 1] >= 0) & (px[:, 1] < height)
-    vis = visible_face(joints, eye) & inside
-    points = [tuple(px[i]) if vis[i] else None for i in range(18)]
-    return draw_openpose(points, width, height), camera_tags(named, rot, elevation, inside), points
+    face = visible_face(joints, eye)
+    canvas = None
+    if overscan:
+        vpx, vdepth = project(verts, eye, rot, focal, width, height)
+        canvas = overscan_canvas((vpx + offset)[vdepth > 1e-3], width, height, overscan)
+    canvas = canvas or frame_canvas(width, height)
+    cpx = to_canvas(px, canvas)
+    on_canvas = (depth > 1e-3) & (cpx[:, 0] >= 0) & (cpx[:, 0] < canvas["width"]) & (cpx[:, 1] >= 0) \
+        & (cpx[:, 1] < canvas["height"])
+    canvas_points = [tuple(cpx[i]) if face[i] and on_canvas[i] else None for i in range(18)]
+    return {"map": draw_openpose(canvas_points, canvas["width"], canvas["height"]),
+            # The prompt describes what is generated: the canvas (whole body when overscanned).
+            "tags": camera_tags(named, rot, elevation, on_canvas),
+            "points": [tuple(px[i]) if face[i] and inside[i] else None for i in range(18)],
+            "cam": {"eye": eye, "rot": rot, "focal": focal, "offset": offset}, "canvas": canvas}
 
 
-# Depth map of the posed body (full mesh, z-buffer) for the camera solved by render_pose: uint8
-# (H, W, 3), near = bright, background black, like MiDaS maps for depth ControlNets.
-def depth_map(model, params, cam, width, height, near=255, far=40):
+# SMPL-X pose + camera settings -> (OpenPose map uint8 (H, W, 3), tags list, points list) for the frame.
+# body: pose_body() result, to reuse it for view_payload; cam: dict that receives the solved camera.
+def render_pose(model, params, width, height, framing="full body", yaw=0.0, elevation=0.0, fov=40.0,
+                zoom=1.0, shift_x=0.0, shift_y=0.0, body=None, cam=None):
+    r = shot(model, params, width, height, framing, yaw, elevation, fov, zoom, shift_x, shift_y, body)
+    if cam is not None:
+        cam.update(r["cam"])
+    return r["map"], r["tags"], r["points"]
+
+
+# Depth map of the posed body (full mesh, z-buffer) for the camera solved by render_pose / shot: uint8
+# (H, W, 3), near = bright, background black, like MiDaS maps for depth ControlNets. canvas: shot()
+# canvas to draw on (default: the frame).
+def depth_map(model, params, cam, width, height, near=255, far=40, canvas=None):
     verts, _ = posed_body(model, params)
     faces = np.asarray(model.faces, np.int64)
     px, depth = project(verts, cam["eye"], cam["rot"], cam["focal"], width, height)
-    px = px + cam["offset"]
+    canvas = canvas or frame_canvas(width, height)
+    px = to_canvas(px + cam["offset"], canvas)
+    width, height = canvas["width"], canvas["height"]
     zbuf = np.full((height, width), np.inf)
     tri, tz = px[faces], depth[faces]                       # (F, 3, 2), (F, 3)
     keep = (tz > 1e-3).all(1)

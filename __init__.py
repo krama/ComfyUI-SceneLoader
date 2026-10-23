@@ -256,6 +256,10 @@ class PoseCamera:
                 "stop_on_new_pose": ("BOOLEAN", {"default": True,
                                                  "tooltip": "Run with a new pose stops here (nothing after this node "
                                                             "runs): set the camera in the view, Run again to render"}),
+                "overscan": ("FLOAT", {"default": 1.3, "min": 0.0, "max": 2.0, "step": 0.05,
+                                       "tooltip": "Body parts outside the frame: render on a larger canvas with "
+                                                  "the whole body (this many frame pixels in total), then crop "
+                                                  "with Pose Camera Crop. 0 = off"}),
             },
             "optional": {
                 "prompt": ("STRING", {"forceInput": True,
@@ -264,10 +268,12 @@ class PoseCamera:
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "STRING", "IMAGE")
-    RETURN_NAMES = ("pose_map", "positive", "camera_tags", "depth_map")
-    OUTPUT_TOOLTIPS = ("OpenPose map for ControlNet OpenPose", "Prompt with the camera tags", "Camera tags",
-                       "Depth of the body from the same camera (near = bright) for a depth ControlNet")
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING", "IMAGE", "LATENT", "POSE_CROP")
+    RETURN_NAMES = ("pose_map", "positive", "camera_tags", "depth_map", "latent", "crop")
+    OUTPUT_TOOLTIPS = ("OpenPose map for ControlNet OpenPose (on the canvas)", "Prompt with the camera tags",
+                       "Camera tags", "Depth of the body from the same camera (near = bright), on the canvas",
+                       "Empty latent of the canvas size (the frame, or the overscan canvas)",
+                       "Where the frame is on the canvas: feed Pose Camera Crop after VAE Decode")
     FUNCTION = "shoot"
     CATEGORY = "SceneLoader"
 
@@ -279,16 +285,16 @@ class PoseCamera:
     # Render the OpenPose map for the camera and put its tags into the prompt.
     # A pose this node has not shown yet stops the run (outputs blocked) so the camera can be set first.
     def shoot(self, smplx, width, height, framing, yaw, elevation, fov, zoom, shift_x, shift_y,
-              stop_on_new_pose=True, prompt="", unique_id=None):
-        from .sceneloader.pose_camera import depth_map, merge_camera_tags, pose_body, render_pose, view_payload
+              stop_on_new_pose=True, overscan=1.3, prompt="", unique_id=None):
+        from .sceneloader.pose_camera import depth_map, merge_camera_tags, pose_body, shot, view_payload
         model = _smplx_model(smplx["model_path"], smplx.get("gender", "neutral"))
         body = pose_body(model, smplx)
         key = pose_key(smplx)
         new_pose = _POSE_SEEN.get(unique_id) != key
         _POSE_SEEN[unique_id] = key
-        cam = {}
-        img, tags, points = render_pose(model, smplx, width, height, framing, yaw, elevation, fov, zoom,
-                                        shift_x, shift_y, body=body, cam=cam)
+        r = shot(model, smplx, width, height, framing, yaw, elevation, fov, zoom, shift_x, shift_y, body,
+                 overscan or None)
+        img, tags, points, canvas = r["map"], r["tags"], r["points"], r["canvas"]
         text = ", ".join(tags)
         seen = sum(p is not None for p in points)
         print(f"[SceneLoader] Pose Camera {width}x{height}: {text}; {seen}/18 points in frame "
@@ -299,11 +305,41 @@ class PoseCamera:
             from comfy_execution.graph_utils import ExecutionBlocker
             print("[SceneLoader] Pose Camera: new pose, run stopped here; set the camera and Run again to render")
             ui["camera_status"] = ["New pose: set the camera, then Run again to render."]
-            return {"ui": ui, "result": (ExecutionBlocker(None),) * 4}
-        depth = depth_map(model, smplx, cam, width, height)
+            return {"ui": ui, "result": (ExecutionBlocker(None),) * 6}
+        depth = depth_map(model, smplx, r["cam"], width, height, canvas=canvas)
         to_image = lambda a: torch.from_numpy(a.astype("float32") / 255.0)[None]  # noqa: E731
-        result = (to_image(img), merge_camera_tags(prompt or "", tags), text, to_image(depth))
+        cw, ch = canvas["width"], canvas["height"]
+        if (cw, ch) != (width, height):
+            print(f"[SceneLoader] Pose Camera overscan: canvas {cw}x{ch}, frame crop {canvas['crop']}")
+        latent = {"samples": torch.zeros([1, 4, ch // 8, cw // 8])}
+        crop = {"crop": canvas["crop"], "width": width, "height": height}
+        result = (to_image(img), merge_camera_tags(prompt or "", tags), text, to_image(depth), latent, crop)
         return {"ui": ui, "result": result}
+
+
+class PoseCameraCrop:
+    """Cut the Pose Camera frame out of an image rendered on its canvas and scale it to the frame size."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "image": ("IMAGE", {"tooltip": "VAE Decode output of the canvas-size latent"}),
+            "crop": ("POSE_CROP", {"tooltip": "Pose Camera crop output"}),
+        }}
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "cut"
+    CATEGORY = "SceneLoader"
+
+    # Crop (x, y, w, h) on the canvas, then lanczos to width x height; same size passes through.
+    def cut(self, image, crop):
+        import comfy.utils
+        x, y, w, h = crop["crop"]
+        out = image[:, y:y + h, x:x + w, :]
+        if (out.shape[2], out.shape[1]) != (crop["width"], crop["height"]):
+            out = comfy.utils.common_upscale(out.movedim(-1, 1), crop["width"], crop["height"], "lanczos",
+                                             "disabled").movedim(1, -1)
+        return (out,)
 
 
 # Last pose shown by each Pose Camera node (unique_id -> pose_key); a new pose stops the run once.
@@ -472,11 +508,13 @@ except Exception as e:  # server not available (tests, CLI)
 
 NODE_CLASS_MAPPINGS = {"SceneLoader": SceneLoader, "SceneComposer": SceneComposer,
                        "SceneSave": SceneSave, "SceneLog": SceneLog, "SMPLXRiggedGLB": SMPLXRiggedGLB,
-                       "SMPLXToOpenPose3D": SMPLXToOpenPose3D, "PoseCamera": PoseCamera}
+                       "SMPLXToOpenPose3D": SMPLXToOpenPose3D, "PoseCamera": PoseCamera,
+                       "PoseCameraCrop": PoseCameraCrop}
 WEB_DIRECTORY = "./web"
 NODE_DISPLAY_NAME_MAPPINGS = {"SceneLoader": "Scene Loader", "SceneComposer": "Scene Composer",
                               "SceneSave": "Scene Save", "SceneLog": "Scene Log",
                               "SMPLXRiggedGLB": "SMPL-X -> Rigged GLB",
-                              "SMPLXToOpenPose3D": "SMPL-X -> OpenPose 3D", "PoseCamera": "Pose Camera"}
+                              "SMPLXToOpenPose3D": "SMPL-X -> OpenPose 3D", "PoseCamera": "Pose Camera",
+                              "PoseCameraCrop": "Pose Camera Crop"}
 
 print(f"[SceneLoader] loaded - {len(NODE_CLASS_MAPPINGS)} nodes, library: {library_root()}")

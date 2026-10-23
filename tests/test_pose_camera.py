@@ -76,6 +76,27 @@ def check(models_dir):
         on = [d[int(p[1]), int(p[0]), 0] > 0 for p in pts if p is not None]
         assert on and all(on), (kw, on)
     print("ok  depth_map: silhouette under the OpenPose joints")
+    # Overscan: a waist-up shot gets a taller canvas holding the legs; the frame is a crop of it.
+    kw = dict(zoom=1.6, shift_y=-0.3)
+    r = pc.shot(model, A_POSE, w, h, body=pc.pose_body(model, A_POSE), overscan=1.3, **kw)
+    c = r["canvas"]
+    assert c["height"] > h * 1.3 and c["width"] % 64 == 0 and c["height"] % 64 == 0, c
+    assert c["width"] * c["height"] <= 1.3 * w * h * 1.1, c
+    x, y, cw, ch = c["crop"]
+    assert y == 0 and abs(cw / ch - w / h) < 0.02 and x + cw <= c["width"] and ch < c["height"], c
+    assert r["points"][10] is None and r["tags"][0] == "full body", r["tags"]  # frame: no feet; canvas: all
+    import cv2
+    crop = cv2.resize(r["map"][y:y + ch, x:x + cw], (w, h), interpolation=cv2.INTER_NEAREST)
+    for p in r["points"]:  # frame joints sit on the cropped canvas map
+        if p is not None:
+            yy, xx = int(p[1]), int(p[0])
+            assert crop[max(0, yy - 6):yy + 7, max(0, xx - 6):xx + 7].any(), p
+    assert r["map"][ch:].any(), "legs drawn below the frame"
+    d = pc.depth_map(model, A_POSE, r["cam"], w, h, canvas=c)
+    assert d.shape == (c["height"], c["width"], 3) and d[ch:].any()
+    full = pc.shot(model, A_POSE, w, h, overscan=1.3)  # body fits: canvas is the frame
+    assert full["canvas"]["crop"] == (0, 0, w, h) and full["map"].shape == (h, w, 3)
+    print("ok  overscan: canvas holds the body, frame crop matches")
     check_js(model)
 
 
